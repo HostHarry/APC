@@ -1,0 +1,57 @@
+# Nested git dirs (single combined repo)
+**/.git/
+# Local backups after `mv .git .git.bak` (do not push)
+**/.git.bak/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Experiments & secrets
+wandb/
+**/wandb/
+*.wandb
+.env
+.env.*
+*.pem
+*.key
+
+# LaTeX build
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+
+# --- Only track .gitignore, 毕业设计2/, MMada_DCD/ (nothing else under autodl-tmp) ---
+/*
+!/.gitignore
+!/毕业设计2/
+!/MMada_DCD/
+
+# MMaDA: large vendored eval assets (re-download per upstream docs)
+MMada_DCD/MMaDA/evaluation/geneval/models/
+MMada_DCD/MMaDA/evaluation/geneval/object_detector/
+MMada_DCD/MMaDA/evaluation/mmdetection/
+MMada_DCD/MMaDA/evaluation/VLMEvalKit/outputs/
+MMada_DCD/MMaDA/evaluation/lm/evals_results/
+MMada_DCD/MMaDA/results/
+MMada_DCD/MMaDA/assets/
+# Large auxiliary JSON (optional: track via Git LFS if needed)
+MMada_DCD/MMaDA/training/questions.json
+
+# Optional: local checkpoints
+# MMada_DCD/**/*.pt
+# MMada_DCD/**/*.pth
+# MMada_DCD/**/*.safetensors

@@ -21,7 +21,10 @@ from .window import (
     CCAWState,
     WindowPressure,
     compute_window_pressure,
+    pressure_adaptive_commit_budget,
+    scope_next_hard_block,
     update_ccaw_state,
+    update_inverse_ccaw_state,
 )
 
 __all__ = [
@@ -41,9 +44,12 @@ __all__ = [
     "compute_window_pressure",
     "history_adjusted_reliability",
     "observe_sparse_history",
+    "pressure_adaptive_commit_budget",
+    "scope_next_hard_block",
     "sparse_distribution_from_dense",
     "sparse_jsd",
     "update_ccaw_state",
+    "update_inverse_ccaw_state",
     "vchd_config_from_dict",
     "visual_contrast_decode",
 ]

@@ -23,6 +23,30 @@ class WindowPressure:
     combined: float
 
 
+def scope_next_hard_block(
+    mask: torch.BoolTensor,
+    *,
+    block_start: int,
+    block_size: int,
+) -> tuple[torch.BoolTensor, int, int]:
+    """Return the next non-empty fixed physical block mask."""
+
+    if mask.ndim != 1:
+        raise ValueError("mask must be one-dimensional")
+    if block_size < 1:
+        raise ValueError("block_size must be at least 1")
+    start = max(0, int(block_start))
+    length = int(mask.numel())
+    while start < length:
+        end = min(length, start + int(block_size))
+        scoped = torch.zeros_like(mask)
+        scoped[start:end] = mask[start:end]
+        if bool(scoped.any()):
+            return scoped, start, end
+        start = end
+    raise ValueError("No non-empty hard block remains")
+
+
 def compute_window_pressure(
     stats: ContrastStats,
     history_stability: torch.Tensor,
@@ -104,3 +128,47 @@ def update_ccaw_state(
     state.mask_capacity = max(
         base, min(maximum, int(state.mask_capacity) + difference)
     )
+
+
+def update_inverse_ccaw_state(
+    state: CCAWState,
+    pressure: WindowPressure,
+    config: VCHDDecodeConfig,
+) -> None:
+    """Shrink on high pressure and expand on low pressure in the same step."""
+
+    decay = float(config.ccaw_pressure_ema_decay)
+    state.pressure_ema = (
+        decay * float(state.pressure_ema)
+        + (1.0 - decay) * float(pressure.combined)
+    )
+    minimum = int(config.mask_capacity)
+    maximum = int(config.ccaw_max_mask_capacity)
+    current_pressure = min(
+        1.0, max(0.0, float(pressure.combined))
+    )
+    target = maximum - round(
+        (maximum - minimum) * current_pressure
+    )
+    difference = target - int(state.mask_capacity)
+    difference = max(
+        -int(config.ccaw_shrink_step),
+        min(int(config.ccaw_expand_step), difference),
+    )
+    state.mask_capacity = max(
+        minimum,
+        min(maximum, int(state.mask_capacity) + difference),
+    )
+
+
+def pressure_adaptive_commit_budget(
+    pressure: WindowPressure,
+    config: VCHDDecodeConfig,
+) -> int:
+    """Map high pressure to a smaller hard-block commit budget."""
+
+    minimum = int(config.ccaw_min_commit_per_iteration)
+    maximum = int(config.max_commit_per_iteration)
+    pressure_value = min(1.0, max(0.0, float(pressure.combined)))
+    budget = maximum - round((maximum - minimum) * pressure_value)
+    return max(minimum, min(maximum, int(budget)))

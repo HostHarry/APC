@@ -32,7 +32,7 @@ except ImportError as e:
     from training.utils import image_transform, image_transform_squash
 
 from .utils import load_mmada_image, reorganize_mmada_prompt
-from .dataset_configs import get_dataset_config
+from .dataset_configs import DEFAULT_KWARGS, get_dataset_config, merge_configs
 from ..base import BaseModel
 from ...dataset import DATASET_TYPE, DATASET_MODALITY
 from ...smp import *
@@ -93,6 +93,10 @@ class MMaDA(BaseModel):
                  vchd_history_penalty_scale=1.0,
                  vchd_history_anchor_min_consistent=0,
                  vchd_ccaw_enabled=False,
+                 vchd_ccaw_mode='legacy',
+                 vchd_ccaw_block_size=32,
+                 vchd_ccaw_min_commit=1,
+                 vchd_ccaw_qualified_budget=1,
                  vchd_ccaw_max_capacity=64,
                  vchd_ccaw_pressure_decay=0.8,
                  vchd_ccaw_expand_step=8,
@@ -193,6 +197,28 @@ class MMaDA(BaseModel):
             )
             == '1'
         )
+        self.vchd_ccaw_mode = os.getenv(
+            'MMADA_VCHD_CCAW_MODE',
+            vchd_ccaw_mode,
+        )
+        self.vchd_ccaw_block_size = int(
+            os.getenv(
+                'MMADA_VCHD_CCAW_BLOCK_SIZE',
+                vchd_ccaw_block_size,
+            )
+        )
+        self.vchd_ccaw_min_commit = int(
+            os.getenv(
+                'MMADA_VCHD_CCAW_MIN_COMMIT',
+                vchd_ccaw_min_commit,
+            )
+        )
+        self.vchd_ccaw_qualified_budget = int(
+            os.getenv(
+                'MMADA_VCHD_CCAW_QUALIFIED_BUDGET',
+                vchd_ccaw_qualified_budget,
+            )
+        )
         self.vchd_ccaw_max_capacity = int(
             os.getenv(
                 'MMADA_VCHD_CCAW_MAX_CAPACITY',
@@ -260,7 +286,7 @@ class MMaDA(BaseModel):
                 decode_param=dcd_decode_param,
                 temperature=dcd_temperature,
                 remasking=dcd_remasking,
-                cache_type='dual',
+                cache_type=os.getenv('MMADA_CACHE_TYPE', cache_type),
                 causal_lambda=self.cv_causal_lambda,
                 causal_clip=self.cv_causal_clip,
                 cv_stride=self.cv_stride,
@@ -365,46 +391,75 @@ class MMaDA(BaseModel):
 
         if self.decode_strategy in ('vchd', 'vchd_fixed'):
             mask_id = int(self.mask_token_id or 126336)
-            eos_id = getattr(self.tokenizer, 'eos_token_id', None)
-            forbidden_ids = {mask_id}
-            for attr in ('pad_token_id', 'bos_token_id'):
-                token_id = getattr(self.tokenizer, attr, None)
-                if token_id is not None and token_id != eos_id:
-                    forbidden_ids.add(int(token_id))
-            # Every prompt/task marker is structurally invalid in an answer.
-            # Keep only the tokenizer EOS legal; build_valid_text_vocab restores
-            # it explicitly after applying this denylist.
-            for token_id in self.uni_prompting.sptids_dict.values():
-                resolved_id = int(token_id)
-                if resolved_id != eos_id:
-                    forbidden_ids.add(resolved_id)
+            tokenizer_vocab = self.tokenizer.get_vocab()
+            eos_ids = {
+                int(token_id)
+                for token_id in (
+                    getattr(self.tokenizer, 'eos_token_id', None),
+                    tokenizer_vocab.get('<|eot|>'),
+                    tokenizer_vocab.get('<|eot_id|>'),
+                )
+                if token_id is not None
+            }
 
+            # All tokenizer/prompt control markers are illegal answer tokens,
+            # except recognized EOS variants which remain valid terminators.
+            forbidden_ids = {mask_id}
+            forbidden_ids.update(
+                int(token_id)
+                for token_id in getattr(self.tokenizer, 'all_special_ids', ())
+                if int(token_id) not in eos_ids
+            )
+            forbidden_ids.update(
+                int(token_id)
+                for token_id, token in getattr(
+                    self.tokenizer, 'added_tokens_decoder', {}
+                ).items()
+                if getattr(token, 'special', False)
+                and int(token_id) not in eos_ids
+            )
+            forbidden_ids.update(
+                int(token_id)
+                for token_id in self.uni_prompting.sptids_dict.values()
+                if int(token_id) not in eos_ids
+            )
+            for token_name in (
+                '<|start_header_id|>',
+                '<|end_header_id|>',
+                '[iPAD]',
+                '<|r2i|>',
+            ):
+                token_id = tokenizer_vocab.get(token_name)
+                if token_id is not None and int(token_id) not in eos_ids:
+                    forbidden_ids.add(int(token_id))
+
+            normalized_eos = tuple(sorted(eos_ids))
             self.vchd_config = VCHDDecodeConfig(
                 mask_id=mask_id,
-                eos_token_id=None if eos_id is None else int(eos_id),
-                text_vocab_size=int(
-                    getattr(
-                        self.model.config,
-                        'llm_vocab_size',
-                        len(self.tokenizer),
-                    )
-                ),
+                eos_token_id=normalized_eos or None,
+                # Image VQ ids are offset by this exact tokenizer length in
+                # generate_mmada; model.config.llm_vocab_size is larger and
+                # would admit the first image-code ids as text candidates.
+                text_vocab_size=len(self.uni_prompting.text_tokenizer),
                 forbidden_token_ids=tuple(sorted(forbidden_ids)),
                 alpha=self.vchd_alpha,
                 beta=self.vchd_beta,
                 tau_base=self.vchd_tau_base,
                 tau_contrast=self.vchd_tau_contrast,
                 mask_capacity=self.vchd_mask_capacity,
-                max_physical_span=max(128, self.vchd_mask_capacity),
+                max_physical_span=max(
+                    self.max_new_tokens,
+                    self.vchd_mask_capacity,
+                    self.vchd_ccaw_block_size,
+                    self.vchd_ccaw_max_capacity,
+                ),
                 max_commit_per_iteration=self.vchd_max_commit,
                 fallback_to_raw=self.vchd_fallback_to_raw,
                 force_math_sdpa=(
                     os.getenv('MMADA_VCHD_FORCE_MATH_SDPA', '1') == '1'
                 ),
                 cache_type=self.vchd_cache_type,
-                cache_refresh_interval=(
-                    self.vchd_cache_refresh_interval
-                ),
+                cache_refresh_interval=self.vchd_cache_refresh_interval,
                 cache_refresh_on_pressure=(
                     self.vchd_cache_refresh_on_pressure
                 ),
@@ -425,6 +480,12 @@ class MMaDA(BaseModel):
                     self.vchd_history_anchor_min_consistent
                 ),
                 ccaw_enabled=self.vchd_ccaw_enabled,
+                ccaw_mode=self.vchd_ccaw_mode,
+                ccaw_block_size=self.vchd_ccaw_block_size,
+                ccaw_min_commit_per_iteration=(
+                    self.vchd_ccaw_min_commit
+                ),
+                ccaw_qualified_budget=self.vchd_ccaw_qualified_budget,
                 ccaw_max_mask_capacity=self.vchd_ccaw_max_capacity,
                 ccaw_pressure_ema_decay=self.vchd_ccaw_pressure_decay,
                 ccaw_expand_step=self.vchd_ccaw_expand_step,
@@ -432,8 +493,9 @@ class MMaDA(BaseModel):
             )
             self.vchd_config.validate()
             warnings.warn(
-                "[MMaDA] VCHD fixed decoder enabled: "
-                f"alpha={self.vchd_config.alpha}, beta={self.vchd_config.beta}, "
+                "[MMaDA] History-VCHD enabled: "
+                f"alpha={self.vchd_config.alpha}, "
+                f"beta={self.vchd_config.beta}, "
                 f"tau_base={self.vchd_config.tau_base}, "
                 f"tau_contrast={self.vchd_config.tau_contrast}, "
                 f"window={self.vchd_config.mask_capacity}, "
@@ -443,9 +505,13 @@ class MMaDA(BaseModel):
                 f"anchor_consistency="
                 f"{self.vchd_config.history_anchor_min_consistent}, "
                 f"ccaw={self.vchd_config.ccaw_enabled}, "
+                f"ccaw_mode={self.vchd_config.ccaw_mode}, "
+                f"ccaw_block={self.vchd_config.ccaw_block_size}, "
+                f"ccaw_min_commit="
+                f"{self.vchd_config.ccaw_min_commit_per_iteration}, "
+                f"qualified_budget={self.vchd_config.ccaw_qualified_budget}, "
                 f"cache={self.vchd_config.cache_type}, "
-                f"cache_refresh={self.vchd_config.cache_refresh_interval}, "
-                f"cache_pressure={self.vchd_config.cache_pressure_threshold}"
+                f"eos={normalized_eos}"
             )
 
         # Optional attention collection (env-controlled, OFF by default).
@@ -462,6 +528,7 @@ class MMaDA(BaseModel):
         # the default behaviour is also collision-free.
         self.run_id = (os.getenv('MMADA_RUN_ID') or '').strip() or time.strftime('%Y%m%d_%H%M%S')
         self._attn_count = 0
+        self._vchd_report_count = 0
         if self.collect_attn:
             os.makedirs(self.attn_dir, exist_ok=True)
             warnings.warn(
@@ -518,21 +585,15 @@ class MMaDA(BaseModel):
             return base_kwargs
 
         dataset_config = get_dataset_config(dataset)
-        if dataset_config:
-            base_kwargs.update(dataset_config)
-        custom = self.custom_configs.get(dataset, {})
-        if custom:
-            base_kwargs.update(custom)
-        return base_kwargs
+        return merge_configs(
+            DEFAULT_KWARGS,
+            dataset_config,
+            self.custom_configs.get(dataset, {}),
+        )
 
    
     def use_custom_prompt(self, dataset):
         assert dataset is not None
-        if dataset == 'MMMU_DEV_VAL_FULL':
-            # This mixed dataset contains 988 MC and 62 open rows. Its dataset
-            # class dispatches prompt construction by each row's question_type;
-            # the wrapper-level DATASET_TYPE is necessarily only "MCQ".
-            return False
         if dataset in [
             'atomic_dataset', 'electro_dataset', 'mechanics_dataset',
             'optics_dataset', 'quantum_dataset', 'statistics_dataset'
@@ -663,7 +724,6 @@ class MMaDA(BaseModel):
         elif self.decode_strategy in ('vchd', 'vchd_fixed') and self.vchd_config is not None:
             generation_kwargs['decode_strategy'] = self.decode_strategy
             generation_kwargs['decode_config'] = self.vchd_config
-            generation_kwargs['temperature'] = 0.0
         
         if dataset:
             warnings.warn(f"Using generation config for {dataset}: {generation_kwargs}")
@@ -807,8 +867,11 @@ class MMaDA(BaseModel):
                 sample_tag = os.getenv(
                     'MMADA_CURRENT_INDEX', str(self._attn_count)
                 )
+                safe_sample_tag = str(sample_tag).replace(os.sep, '_')
                 report_path = os.path.join(
-                    report_dir, f'vchd_report_{sample_tag}.json'
+                    report_dir,
+                    f'vchd_report_{self.run_id}_{safe_sample_tag}_'
+                    f'{self._vchd_report_count:06d}.json',
                 )
                 temporary_path = report_path + '.tmp'
                 payload = {
@@ -817,6 +880,52 @@ class MMaDA(BaseModel):
                     "run_id": self.run_id,
                     "image": image_path,
                     "prompt": prompt,
+                    "model_path": self.model_path,
+                    "torch_version": torch.__version__,
+                    "cuda_version": torch.version.cuda,
+                    "input_length": int(input_ids.shape[1]),
+                    "image_span": [
+                        2,
+                        2 + int(image_tokens.shape[1]),
+                    ],
+                    "vchd_config": {
+                        "alpha": self.vchd_config.alpha,
+                        "beta": self.vchd_config.beta,
+                        "tau_base": self.vchd_config.tau_base,
+                        "tau_contrast": self.vchd_config.tau_contrast,
+                        "mask_capacity": self.vchd_config.mask_capacity,
+                        "max_commit_per_iteration": (
+                            self.vchd_config.max_commit_per_iteration
+                        ),
+                        "history_enabled": (
+                            self.vchd_config.history_enabled
+                        ),
+                        "history_penalty_scale": (
+                            self.vchd_config.history_penalty_scale
+                        ),
+                        "history_anchor_min_consistent": (
+                            self.vchd_config.history_anchor_min_consistent
+                        ),
+                        "ccaw_enabled": self.vchd_config.ccaw_enabled,
+                        "ccaw_mode": self.vchd_config.ccaw_mode,
+                        "ccaw_block_size": (
+                            self.vchd_config.ccaw_block_size
+                        ),
+                        "ccaw_min_commit_per_iteration": (
+                            self.vchd_config.ccaw_min_commit_per_iteration
+                        ),
+                        "ccaw_qualified_budget": (
+                            self.vchd_config.ccaw_qualified_budget
+                        ),
+                        "cache_type": self.vchd_config.cache_type,
+                        "force_math_sdpa": (
+                            self.vchd_config.force_math_sdpa
+                        ),
+                        "text_vocab_size": (
+                            self.vchd_config.text_vocab_size
+                        ),
+                        "eos_token_id": self.vchd_config.eos_token_id,
+                    },
                     "report": debug_info,
                 }
                 with open(temporary_path, 'w', encoding='utf-8') as handle:
@@ -828,6 +937,7 @@ class MMaDA(BaseModel):
                     )
                     handle.write('\n')
                 os.replace(temporary_path, report_path)
+                self._vchd_report_count += 1
         
         response_text = self.uni_prompting.text_tokenizer.batch_decode(
             output_ids[:, input_ids.shape[1]:], 
@@ -840,12 +950,6 @@ class MMaDA(BaseModel):
 
     def post_process_response(self, response, dataset=None):
         if dataset is None:
-            return response
-
-        if dataset == 'MMMU_DEV_VAL_FULL':
-            # Preserve open responses and A--I MC answers. MMMUFullDataset
-            # dispatches row-wise and its MC evaluator infers against the
-            # actual option columns, so a dataset-wide [A-E] regex is invalid.
             return response
             
         if DATASET_TYPE(dataset) == 'Y/N':

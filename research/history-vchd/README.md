@@ -114,6 +114,15 @@ MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT=2 \
 bash scripts/run_history_vchd.sh
 ```
 
+```bash
+# CCAW-v2 Inverse-window: expand on low pressure and shrink on high pressure.
+MMADA_VCHD_CCAW=1 \
+MMADA_VCHD_CCAW_MODE=inverse_window \
+MMADA_VCHD_MASK_CAPACITY=16 \
+MMADA_VCHD_CCAW_MAX_CAPACITY=64 \
+bash scripts/run_history_vchd.sh
+```
+
 Documented knobs (see `MMaDA/decoding/config.py` for defaults + validation):
 
 | Env var | Default | Meaning |
@@ -128,7 +137,11 @@ Documented knobs (see `MMaDA/decoding/config.py` for defaults + validation):
 | `MMADA_VCHD_HISTORY_EMA_DECAY` | 0.7 | history EMA on old distribution |
 | `MMADA_VCHD_HISTORY_PENALTY_SCALE` | 1.0 | multiplier for the history-instability reliability penalty |
 | `MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT` | 0 | consecutive repeated contrast top-1 matches required before the answer anchor is threshold-eligible; 0 disables the gate |
-| `MMADA_VCHD_CCAW` | 1 | enable CCAW dynamic window expansion |
+| `MMADA_VCHD_CCAW` | 0 | enable CCAW |
+| `MMADA_VCHD_CCAW_MODE` | `legacy` | `legacy`, `hard_block`, or `inverse_window` |
+| `MMADA_VCHD_CCAW_BLOCK_SIZE` | 32 | fixed physical block size in `hard_block` mode |
+| `MMADA_VCHD_CCAW_MIN_COMMIT` | 1 | lower bound for pressure-adaptive commits in `hard_block` mode |
+| `MMADA_VCHD_CCAW_QUALIFIED_BUDGET` | 1 | minimum qualified-token budget used by legacy CCAW |
 | `MMADA_VCHD_CCAW_MAX_CAPACITY` | 64 | upper bound for CCAW window growth |
 | `MMADA_VCHD_CCAW_PRESSURE_DECAY` | 0.8 | CCAW pressure EMA |
 | `MMADA_VCHD_CCAW_EXPAND_STEP` | 8 | window growth step |

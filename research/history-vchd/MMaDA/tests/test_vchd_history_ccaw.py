@@ -8,12 +8,16 @@ from decoding import (
     CCAWState,
     ContrastStats,
     VCHDDecodeConfig,
+    WindowPressure,
     compute_window_pressure,
     history_adjusted_reliability,
     observe_sparse_history,
+    pressure_adaptive_commit_budget,
+    scope_next_hard_block,
     sparse_distribution_from_dense,
     sparse_jsd,
     update_ccaw_state,
+    update_inverse_ccaw_state,
     visual_contrast_decode,
 )
 from decoding.selector import (
@@ -204,6 +208,35 @@ def test_ccaw_expands_same_snapshot_until_qualified():
     assert selection.positions.tolist() == [2, 3]
 
 
+def test_ccaw_expands_until_qualified_budget_is_met():
+    stats = _stats(
+        base=[0.9, 0.9, 0.05, 0.05, 0.9, 0.9],
+        contrast=[0.95, 0.95, 0.2, 0.2, 0.95, 0.95],
+    )
+    config = VCHDDecodeConfig(
+        tau_base=0.1,
+        tau_contrast=0.9,
+        mask_capacity=4,
+        max_physical_span=6,
+        max_commit_per_iteration=4,
+        ccaw_enabled=True,
+        ccaw_qualified_budget=3,
+        ccaw_max_mask_capacity=6,
+        ccaw_expand_step=2,
+    )
+    selection = select_ccaw_positions(
+        stats,
+        torch.ones(6, dtype=torch.bool),
+        config,
+        contrast_reliability=stats.contrast_confidence,
+        current_mask_capacity=4,
+    )
+    assert selection.reason == THRESHOLD_COMMIT
+    assert selection.search_expansions == 1
+    assert selection.qualified_count == 4
+    assert selection.positions.tolist() == [0, 1, 4, 5]
+
+
 def test_ccaw_falls_back_only_after_maximum_window():
     stats = _stats(base=[0.05] * 6, contrast=[0.2] * 6)
     config = VCHDDecodeConfig(
@@ -263,6 +296,70 @@ def test_ccaw_pressure_update_respects_capacity_step():
     assert state.mask_capacity == 4
 
 
+def _pressure(value: float) -> WindowPressure:
+    return WindowPressure(
+        candidate_conflict=value,
+        history_instability=value,
+        qualification_deficit=value,
+        combined=value,
+    )
+
+
+def test_hard_block_scope_does_not_advance_until_empty():
+    mask = torch.tensor(
+        [False, True, False, False, True, True, False, False]
+    )
+    scoped, left, right = scope_next_hard_block(
+        mask,
+        block_start=0,
+        block_size=4,
+    )
+    assert (left, right) == (0, 4)
+    assert torch.nonzero(scoped, as_tuple=True)[0].tolist() == [1]
+
+    mask[1] = False
+    scoped, left, right = scope_next_hard_block(
+        mask,
+        block_start=0,
+        block_size=4,
+    )
+    assert (left, right) == (4, 8)
+    assert torch.nonzero(scoped, as_tuple=True)[0].tolist() == [4, 5]
+
+
+def test_high_pressure_reduces_hard_block_commit_budget():
+    config = VCHDDecodeConfig(
+        mask_capacity=8,
+        max_commit_per_iteration=8,
+        ccaw_min_commit_per_iteration=2,
+        ccaw_max_mask_capacity=8,
+    )
+    low = pressure_adaptive_commit_budget(_pressure(0.0), config)
+    medium = pressure_adaptive_commit_budget(_pressure(0.5), config)
+    high = pressure_adaptive_commit_budget(_pressure(1.0), config)
+    assert low == 8
+    assert low > medium > high
+    assert high == 2
+
+
+def test_inverse_window_capacity_is_monotonic_with_pressure():
+    config = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+    )
+    capacities = []
+    for value in (0.0, 0.5, 1.0):
+        state = CCAWState(mask_capacity=2)
+        update_inverse_ccaw_state(state, _pressure(value), config)
+        capacities.append(state.mask_capacity)
+    assert capacities == [8, 5, 2]
+
+
 class _Output:
     def __init__(self, logits):
         self.logits = logits
@@ -288,6 +385,85 @@ class _FixedModel:
         logits[:, :, 2] = 2.0
         logits[:, :, 5] = 20.0
         return _Output(logits)
+
+
+def test_hard_block_decoder_reforwards_and_never_crosses_block():
+    mask_id = 4
+    tokens = torch.tensor([[0, 2, 3] + [mask_id] * 8])
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 3, mask_id),
+        tau_base=0.5,
+        tau_contrast=0.5,
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        force_math_sdpa=False,
+        truncate_at_eos=False,
+        collect_trace=True,
+        return_report=True,
+        ccaw_enabled=True,
+        ccaw_mode="hard_block",
+        ccaw_block_size=4,
+        ccaw_max_mask_capacity=8,
+    )
+    output, report = visual_contrast_decode(
+        _FixedModel(),
+        tokens,
+        decode_start=3,
+        decode_end=11,
+        image_span=(1, 2),
+        config=config,
+    )
+    assert output[0, 3:].tolist() == [1] * 8
+    trace = report["trace"]
+    assert [item["hard_block_left"] for item in trace] == [0, 0, 4, 4]
+    assert all(
+        item["hard_block_left"] <= position < item["hard_block_right"]
+        for item in trace
+        for position in item["selected_positions"]
+    )
+    assert report["model_evaluations"] == 4
+    assert report["threshold_commit_events"] == 4
+    assert report["ccaw_search_expansions"] == 0
+    assert all(item["history_anchor_qualified"] for item in trace)
+
+
+def test_inverse_window_uses_current_snapshot_pressure():
+    mask_id = 4
+    tokens = torch.tensor([[0, 2, 3] + [mask_id] * 4])
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 3, mask_id),
+        tau_base=0.5,
+        tau_contrast=0.5,
+        mask_capacity=2,
+        max_physical_span=4,
+        max_commit_per_iteration=2,
+        force_math_sdpa=False,
+        truncate_at_eos=False,
+        collect_trace=True,
+        return_report=True,
+        ccaw_enabled=True,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=4,
+        ccaw_expand_step=2,
+    )
+    _, report = visual_contrast_decode(
+        _FixedModel(),
+        tokens,
+        decode_start=3,
+        decode_end=7,
+        image_span=(1, 2),
+        config=config,
+    )
+    first = report["trace"][0]
+    assert first["window_pressure"]["combined"] == 0.0
+    assert first["persistent_mask_capacity"] == 4
+    assert first["window_mask_capacity"] == 4
+    assert report["ccaw_search_expansions"] == 0
 
 
 def test_history_ccaw_decoder_terminates_and_reports_state():

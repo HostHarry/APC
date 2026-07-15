@@ -1,7 +1,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from typing import Any, Mapping, Optional, Tuple
+from numbers import Integral
+from typing import Any, List, Mapping, Optional, Tuple, Union
+
+
+EOSTokenId = Optional[Union[int, Tuple[int, ...], List[int]]]
+
+
+def normalize_eos_token_ids(eos_token_id: EOSTokenId) -> Tuple[int, ...]:
+    """Normalize a scalar or sequence of EOS IDs to a unique tuple."""
+
+    if eos_token_id is None:
+        return ()
+    if isinstance(eos_token_id, Integral) and not isinstance(eos_token_id, bool):
+        values = (eos_token_id,)
+    elif isinstance(eos_token_id, (tuple, list)):
+        values = eos_token_id
+    else:
+        raise TypeError(
+            "eos_token_id must be an int, tuple/list of ints, or None"
+        )
+
+    normalized = []
+    seen = set()
+    for token_id in values:
+        if isinstance(token_id, bool) or not isinstance(token_id, Integral):
+            raise TypeError("Every eos_token_id value must be an int")
+        token_id = int(token_id)
+        if token_id < 0:
+            raise ValueError(
+                f"eos_token_id values must be non-negative, got {token_id}"
+            )
+        if token_id not in seen:
+            normalized.append(token_id)
+            seen.add(token_id)
+    return tuple(normalized)
 
 
 @dataclass
@@ -14,7 +48,7 @@ class VCHDDecodeConfig:
     """
 
     mask_id: int = 126336
-    eos_token_id: Optional[int] = None
+    eos_token_id: EOSTokenId = None
     text_vocab_size: Optional[int] = None
     forbidden_token_ids: Tuple[int, ...] = ()
 
@@ -45,6 +79,10 @@ class VCHDDecodeConfig:
     history_penalty_scale: float = 1.0
     history_anchor_min_consistent: int = 0
     ccaw_enabled: bool = False
+    ccaw_mode: str = "legacy"
+    ccaw_block_size: int = 32
+    ccaw_min_commit_per_iteration: int = 1
+    ccaw_qualified_budget: int = 1
     ccaw_max_mask_capacity: int = 64
     ccaw_pressure_ema_decay: float = 0.8
     ccaw_expand_step: int = 8
@@ -53,10 +91,7 @@ class VCHDDecodeConfig:
     def validate(self) -> None:
         if self.mask_id < 0:
             raise ValueError(f"mask_id must be non-negative, got {self.mask_id}")
-        if self.eos_token_id is not None and self.eos_token_id < 0:
-            raise ValueError(
-                f"eos_token_id must be non-negative or None, got {self.eos_token_id}"
-            )
+        normalize_eos_token_ids(self.eos_token_id)
         if self.text_vocab_size is not None and self.text_vocab_size <= 0:
             raise ValueError(
                 f"text_vocab_size must be positive or None, got {self.text_vocab_size}"
@@ -107,10 +142,54 @@ class VCHDDecodeConfig:
             raise ValueError(
                 "history_anchor_min_consistent requires history_enabled"
             )
+        if self.ccaw_qualified_budget < 1:
+            raise ValueError("ccaw_qualified_budget must be at least 1")
+        if self.ccaw_mode not in {
+            "legacy",
+            "hard_block",
+            "inverse_window",
+        }:
+            raise ValueError(
+                "ccaw_mode must be 'legacy', 'hard_block', or "
+                f"'inverse_window', got {self.ccaw_mode!r}"
+            )
+        if self.ccaw_block_size < 1:
+            raise ValueError("ccaw_block_size must be at least 1")
+        if (
+            self.ccaw_mode == "hard_block"
+            and self.ccaw_block_size > self.max_physical_span
+        ):
+            raise ValueError(
+                "ccaw_block_size cannot exceed max_physical_span "
+                f"({self.ccaw_block_size} > {self.max_physical_span})"
+            )
+        if not (
+            1
+            <= self.ccaw_min_commit_per_iteration
+            <= self.max_commit_per_iteration
+        ):
+            raise ValueError(
+                "ccaw_min_commit_per_iteration must be between 1 and "
+                "max_commit_per_iteration"
+            )
+        if (
+            self.ccaw_mode == "hard_block"
+            and self.max_commit_per_iteration > self.ccaw_block_size
+        ):
+            raise ValueError(
+                "max_commit_per_iteration cannot exceed ccaw_block_size "
+                "in hard_block mode"
+            )
         if self.ccaw_max_mask_capacity < self.mask_capacity:
             raise ValueError(
                 "ccaw_max_mask_capacity must be at least mask_capacity "
                 f"({self.ccaw_max_mask_capacity} < {self.mask_capacity})"
+            )
+        if self.ccaw_qualified_budget > self.ccaw_max_mask_capacity:
+            raise ValueError(
+                "ccaw_qualified_budget cannot exceed ccaw_max_mask_capacity "
+                f"({self.ccaw_qualified_budget} > "
+                f"{self.ccaw_max_mask_capacity})"
             )
         if not 0.0 <= self.ccaw_pressure_ema_decay < 1.0:
             raise ValueError(
@@ -153,6 +232,17 @@ def vchd_config_from_dict(values: Mapping[str, Any]) -> VCHDDecodeConfig:
         kwargs["forbidden_token_ids"] = tuple(
             int(token_id) for token_id in kwargs["forbidden_token_ids"]
         )
+    if "eos_token_id" in kwargs:
+        original_eos = kwargs["eos_token_id"]
+        normalized_eos = normalize_eos_token_ids(original_eos)
+        if original_eos is None:
+            kwargs["eos_token_id"] = None
+        elif isinstance(original_eos, Integral) and not isinstance(
+            original_eos, bool
+        ):
+            kwargs["eos_token_id"] = normalized_eos[0]
+        else:
+            kwargs["eos_token_id"] = normalized_eos
     config = VCHDDecodeConfig(**kwargs)
     config.validate()
     return config

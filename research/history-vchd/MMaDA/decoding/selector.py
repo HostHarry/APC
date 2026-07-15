@@ -90,6 +90,7 @@ def select_fixed_window_positions(
     *,
     contrast_reliability: Optional[torch.Tensor] = None,
     mask_capacity: Optional[int] = None,
+    max_commit_per_iteration: Optional[int] = None,
 ) -> Selection:
     """Apply the base/contrast dual gate, with one-token progress fallback."""
 
@@ -124,8 +125,15 @@ def select_fixed_window_positions(
         order = _stable_lexicographic_order(
             qualified_positions, qualified_contrast, qualified_base
         )
+        commit_limit = (
+            int(config.max_commit_per_iteration)
+            if max_commit_per_iteration is None
+            else int(max_commit_per_iteration)
+        )
+        if commit_limit < 1:
+            raise ValueError("max_commit_per_iteration must be at least 1")
         selected = qualified_positions[order][
-            : int(config.max_commit_per_iteration)
+            :commit_limit
         ]
         return Selection(
             positions=selected,
@@ -159,7 +167,7 @@ def select_ccaw_positions(
     contrast_reliability: torch.Tensor,
     current_mask_capacity: int,
 ) -> Selection:
-    """Expand the same snapshot until qualified or physically/max saturated."""
+    """Expand until the safe-token budget is met or the window saturates."""
 
     capacity = max(int(config.mask_capacity), int(current_mask_capacity))
     capacity = min(capacity, int(config.ccaw_max_mask_capacity))
@@ -174,7 +182,15 @@ def select_ccaw_positions(
             contrast_reliability=contrast_reliability,
             mask_capacity=capacity,
         )
-        if selection.reason == THRESHOLD_COMMIT:
+        active = selection.window.active_positions
+        qualified_target = min(
+            int(config.ccaw_qualified_budget),
+            int(active.numel()),
+        )
+        if (
+            selection.reason == THRESHOLD_COMMIT
+            and selection.qualified_count >= qualified_target
+        ):
             return Selection(
                 positions=selection.positions,
                 reason=selection.reason,
@@ -183,7 +199,6 @@ def select_ccaw_positions(
                 search_expansions=expansions,
             )
 
-        active = selection.window.active_positions
         saturated = (
             previous_active is not None
             and torch.equal(previous_active, active)

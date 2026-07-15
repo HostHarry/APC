@@ -16,6 +16,7 @@ from decoding import (  # noqa: E402
     build_paired_attention_bias,
     build_valid_text_vocab,
     compute_contrast_stats,
+    vchd_config_from_dict,
     visual_contrast_decode,
 )
 from decoding.selector import (  # noqa: E402
@@ -91,6 +92,32 @@ class _FixedBranchModel:
         logits[1, :, 1] = 5.0
         logits[1, :, 2] = 2.0
         logits[:, :, 5] = 20.0  # Image-vocabulary token; must be filtered.
+        return _Output(logits)
+
+
+class _MultipleEOSModel:
+    """Emits two EOS IDs while leaving later masks to be fully decoded."""
+
+    def __init__(self):
+        self.config = type(
+            "Config", (), {"vocab_size": 6, "llm_vocab_size": 5}
+        )()
+
+    def __call__(
+        self,
+        *,
+        input_ids,
+        attention_mask=None,
+        attention_bias=None,
+        use_cache=False,
+    ):
+        del attention_mask, attention_bias, use_cache
+        batch, seq_len = input_ids.shape
+        logits = torch.zeros(batch, seq_len, 6)
+        logits[:, :, 1] = 1.0
+        for position, token_id in enumerate((3, 2, 1), start=3):
+            logits[:, position, token_id] = 8.0
+        logits[:, :, 5] = 20.0
         return _Output(logits)
 
 
@@ -195,6 +222,63 @@ def test_text_vocab_filter_removes_image_and_control_tokens_but_keeps_eos():
     ]
 
 
+def test_multiple_eos_ids_are_normalized_and_all_remain_legal():
+    scalar = vchd_config_from_dict({"eos_token_id": 2})
+    assert scalar.eos_token_id == 2
+    multiple = vchd_config_from_dict({"eos_token_id": [2, 3]})
+    assert multiple.eos_token_id == (2, 3)
+    VCHDDecodeConfig(eos_token_id=[2, 3]).validate()
+
+    valid = build_valid_text_vocab(
+        8,
+        text_vocab_size=6,
+        forbidden_token_ids=(0, 2, 3, 5),
+        eos_token_id=(2, 3),
+        device=torch.device("cpu"),
+    )
+    assert valid.tolist() == [
+        False,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]
+
+
+def test_multiple_eos_truncates_after_full_decode_at_first_match():
+    mask_id = 4
+    tokens = torch.tensor([[0, 2, 1, mask_id, mask_id, mask_id]])
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        eos_token_id=[2, 3],
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 2, 3, mask_id),
+        tau_base=0.5,
+        tau_contrast=0.5,
+        mask_capacity=3,
+        max_physical_span=3,
+        max_commit_per_iteration=1,
+        force_math_sdpa=False,
+        return_report=True,
+    )
+    output, report = visual_contrast_decode(
+        _MultipleEOSModel(),
+        tokens,
+        decode_start=3,
+        decode_end=6,
+        image_span=(1, 2),
+        config=config,
+    )
+
+    assert output[0, 3:].tolist() == [3]
+    assert report["threshold_commits"] == 3
+    assert report["model_evaluations"] == 3
+    assert report["context_versions"] == 3
+
+
 def test_fixed_decoder_commits_multiple_tokens_and_terminates():
     model = _FixedBranchModel()
     mask_id = 4
@@ -227,6 +311,12 @@ def test_fixed_decoder_commits_multiple_tokens_and_terminates():
     assert report["model_evaluations"] == 2
     assert report["threshold_commits"] == 3
     assert report["fallback_commits"] == 0
+    assert report["threshold_commit_events"] == 2
+    assert report["fallback_commit_events"] == 0
+    assert report["scored_mask_positions"] == 4
+    assert 0.0 <= report["contrast_token_change_rate"] <= 1.0
+    assert 0.0 <= report["mean_visual_relevance"] <= 1.0
+    assert report["mean_history_reliability_penalty"] == 0.0
     assert len(report["trace"]) == 2
 
 

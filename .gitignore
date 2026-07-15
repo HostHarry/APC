@@ -34,11 +34,13 @@ wandb/
 *.synctex.gz
 *.toc
 
-# --- Only track .gitignore, 毕业设计2/, MMada_DCD/ (nothing else under autodl-tmp) ---
+# --- Only track .gitignore, 毕业设计2/, MMada_DCD/, research/ ---
 /*
 !/.gitignore
 !/毕业设计2/
 !/MMada_DCD/
+!/research/
+!/research/**
 
 # MMaDA: large vendored eval assets (re-download per upstream docs)
 MMada_DCD/MMaDA/evaluation/geneval/models/

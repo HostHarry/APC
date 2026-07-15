@@ -42,6 +42,8 @@ class VCHDDecodeConfig:
     history_enabled: bool = False
     history_top_v_tokens: int = 8
     history_ema_decay: float = 0.7
+    history_penalty_scale: float = 1.0
+    history_anchor_min_consistent: int = 0
     ccaw_enabled: bool = False
     ccaw_max_mask_capacity: int = 64
     ccaw_pressure_ema_decay: float = 0.8
@@ -91,6 +93,19 @@ class VCHDDecodeConfig:
             raise ValueError(
                 "history_ema_decay must be in [0, 1), got "
                 f"{self.history_ema_decay}"
+            )
+        if self.history_penalty_scale < 0.0:
+            raise ValueError(
+                "history_penalty_scale must be non-negative, got "
+                f"{self.history_penalty_scale}"
+            )
+        if self.history_anchor_min_consistent < 0:
+            raise ValueError(
+                "history_anchor_min_consistent must be non-negative"
+            )
+        if self.history_anchor_min_consistent and not self.history_enabled:
+            raise ValueError(
+                "history_anchor_min_consistent requires history_enabled"
             )
         if self.ccaw_max_mask_capacity < self.mask_capacity:
             raise ValueError(

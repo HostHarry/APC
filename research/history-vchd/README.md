@@ -105,6 +105,15 @@ bash scripts/run_history_vchd.sh
 bash MMaDA/evaluation/VLMEvalKit/scripts/run_vchd_overnight_20260714.sh
 ```
 
+```bash
+# H2 History: amplify the instability penalty and require two repeated
+# contrast top-1 matches before the answer anchor is threshold-eligible.
+MMADA_VCHD_HISTORY=1 \
+MMADA_VCHD_HISTORY_PENALTY_SCALE=4 \
+MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT=2 \
+bash scripts/run_history_vchd.sh
+```
+
 Documented knobs (see `MMaDA/decoding/config.py` for defaults + validation):
 
 | Env var | Default | Meaning |
@@ -117,6 +126,8 @@ Documented knobs (see `MMaDA/decoding/config.py` for defaults + validation):
 | `MMADA_VCHD_HISTORY` | 1 | enable sparse-history reliability correction |
 | `MMADA_VCHD_HISTORY_TOP_V` | 8 | sparse history top-V truncation |
 | `MMADA_VCHD_HISTORY_EMA_DECAY` | 0.7 | history EMA on old distribution |
+| `MMADA_VCHD_HISTORY_PENALTY_SCALE` | 1.0 | multiplier for the history-instability reliability penalty |
+| `MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT` | 0 | consecutive repeated contrast top-1 matches required before the answer anchor is threshold-eligible; 0 disables the gate |
 | `MMADA_VCHD_CCAW` | 1 | enable CCAW dynamic window expansion |
 | `MMADA_VCHD_CCAW_MAX_CAPACITY` | 64 | upper bound for CCAW window growth |
 | `MMADA_VCHD_CCAW_PRESSURE_DECAY` | 0.8 | CCAW pressure EMA |

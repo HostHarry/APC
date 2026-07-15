@@ -16,6 +16,7 @@ class SparseHistory:
     other_prob: torch.FloatTensor
     last_observed_context_version: int
     last_top1_token: int
+    consecutive_top1_matches: int
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class HistoryObservation:
     stability: torch.FloatTensor
     next_history: SparseHistory
     updated: bool
+    consecutive_top1_matches: int
 
 
 def _normalized_parts(
@@ -169,6 +171,11 @@ def _ema_history(
         other_prob=other_prob,
         last_observed_context_version=int(context_version),
         last_top1_token=int(current_ids[0].item()),
+        consecutive_top1_matches=(
+            history.consecutive_top1_matches + 1
+            if int(current_ids[0].item()) == history.last_top1_token
+            else 0
+        ),
     )
 
 
@@ -201,6 +208,7 @@ def observe_sparse_history(
             ).clone(),
             last_observed_context_version=int(context_version),
             last_top1_token=int(current_ids[0].item()),
+            consecutive_top1_matches=0,
         )
         return HistoryObservation(
             stability=torch.ones(
@@ -208,6 +216,7 @@ def observe_sparse_history(
             ),
             next_history=next_history,
             updated=True,
+            consecutive_top1_matches=0,
         )
 
     if history.last_observed_context_version > context_version:
@@ -228,20 +237,23 @@ def observe_sparse_history(
             stability=stability,
             next_history=history,
             updated=False,
+            consecutive_top1_matches=history.consecutive_top1_matches,
         )
 
+    next_history = _ema_history(
+        history,
+        current_ids,
+        current_probs,
+        current_other,
+        context_version=context_version,
+        ema_decay=ema_decay,
+        top_v_tokens=top_v_tokens,
+    )
     return HistoryObservation(
         stability=stability,
-        next_history=_ema_history(
-            history,
-            current_ids,
-            current_probs,
-            current_other,
-            context_version=context_version,
-            ema_decay=ema_decay,
-            top_v_tokens=top_v_tokens,
-        ),
+        next_history=next_history,
         updated=True,
+        consecutive_top1_matches=next_history.consecutive_top1_matches,
     )
 
 
@@ -249,8 +261,10 @@ def history_adjusted_reliability(
     contrast_confidence: torch.Tensor,
     visual_relevance: torch.Tensor,
     history_stability: torch.Tensor,
+    *,
+    penalty_scale: float = 1.0,
 ) -> torch.FloatTensor:
-    """R = C_contrast * [1 - rho * (1 - T)]."""
+    """R = C_contrast * [1 - clamp(gamma * rho * (1 - T), 0, 1)]."""
 
     if not (
         contrast_confidence.shape
@@ -258,10 +272,15 @@ def history_adjusted_reliability(
         == history_stability.shape
     ):
         raise ValueError("Reliability inputs must have identical shapes")
-    reliability = contrast_confidence.float() * (
-        1.0
-        - visual_relevance.float()
+    if not math.isfinite(float(penalty_scale)) or penalty_scale < 0.0:
+        raise ValueError("penalty_scale must be finite and non-negative")
+    penalty = (
+        float(penalty_scale)
+        * visual_relevance.float()
         * (1.0 - history_stability.float())
+    ).clamp(0.0, 1.0)
+    reliability = contrast_confidence.float() * (
+        1.0 - penalty
     )
     if not bool(torch.isfinite(reliability).all()):
         raise FloatingPointError("History reliability produced NaN or Inf")

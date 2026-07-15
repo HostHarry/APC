@@ -101,6 +101,7 @@ def visual_contrast_decode(
     history: Dict[int, SparseHistory] = {}
     history_observations = 0
     history_stability_sum = 0.0
+    history_anchor_forced_deferrals = 0
     ccaw_state = CCAWState(mask_capacity=int(config.mask_capacity))
     ccaw_search_expansions = 0
     ccaw_pressure_sum = 0.0
@@ -149,7 +150,15 @@ def visual_contrast_decode(
             ),
         )
         history_stability = torch.ones_like(stats.contrast_confidence)
+        history_consistency = torch.zeros_like(
+            stats.contrast_confidence,
+            dtype=torch.long,
+        )
         contrast_reliability = stats.contrast_confidence
+        history_anchor_position = int(
+            torch.nonzero(mask, as_tuple=True)[0][0].item()
+        )
+        history_anchor_forced = False
         history_updates: Dict[int, SparseHistory] = {}
         snapshot_history_observations = 0
         snapshot_history_stability_sum = 0.0
@@ -174,6 +183,9 @@ def visual_contrast_decode(
                     top_v_tokens=config.history_top_v_tokens,
                 )
                 history_stability[position] = observation.stability
+                history_consistency[position] = (
+                    observation.consecutive_top1_matches
+                )
                 history_updates[position] = observation.next_history
                 snapshot_history_observations += int(observation.updated)
                 snapshot_history_stability_sum += float(
@@ -183,7 +195,16 @@ def visual_contrast_decode(
                 stats.contrast_confidence,
                 stats.visual_relevance,
                 history_stability,
+                penalty_scale=config.history_penalty_scale,
             )
+            if (
+                config.history_anchor_min_consistent
+                and int(history_consistency[history_anchor_position].item())
+                < int(config.history_anchor_min_consistent)
+            ):
+                contrast_reliability = contrast_reliability.clone()
+                contrast_reliability[history_anchor_position] = 0.0
+                history_anchor_forced = True
 
         if config.ccaw_enabled:
             selection = select_ccaw_positions(
@@ -203,6 +224,12 @@ def visual_contrast_decode(
         selected = selection.positions
         if selected.numel() == 0:
             raise RuntimeError("Selector returned no token and would deadlock")
+        anchor_qualified = bool(
+            stats.base_confidence[history_anchor_position]
+            >= float(config.tau_base)
+            and contrast_reliability[history_anchor_position]
+            >= float(config.tau_contrast)
+        )
 
         use_raw = (
             selection.reason == MAX_WINDOW_TOP1_FALLBACK
@@ -254,6 +281,10 @@ def visual_contrast_decode(
         ccaw_search_expansions += int(selection.search_expansions)
         history_observations += snapshot_history_observations
         history_stability_sum += snapshot_history_stability_sum
+        history_anchor_forced_deferrals += int(
+            history_anchor_forced
+            and not bool((selected == history_anchor_position).any())
+        )
 
         if config.collect_trace:
             pressure_values = (
@@ -281,6 +312,12 @@ def visual_contrast_decode(
                     "window_active_masks": int(
                         selection.window.active_positions.numel()
                     ),
+                    "history_anchor_position": history_anchor_position,
+                    "history_anchor_qualified": anchor_qualified,
+                    "history_anchor_consistent_observations": int(
+                        history_consistency[history_anchor_position].item()
+                    ),
+                    "history_anchor_forced_deferral": history_anchor_forced,
                     "persistent_mask_capacity": ccaw_state.mask_capacity,
                     "search_expansions": selection.search_expansions,
                     "selected_positions": selected.detach().cpu().tolist(),
@@ -360,6 +397,11 @@ def visual_contrast_decode(
         "history_enabled": bool(config.history_enabled),
         "history_top_v_tokens": int(config.history_top_v_tokens),
         "history_ema_decay": float(config.history_ema_decay),
+        "history_penalty_scale": float(config.history_penalty_scale),
+        "history_anchor_min_consistent": int(
+            config.history_anchor_min_consistent
+        ),
+        "history_anchor_forced_deferrals": history_anchor_forced_deferrals,
         "history_observations": history_observations,
         "mean_history_stability": (
             history_stability_sum / history_observations

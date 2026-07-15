@@ -75,6 +75,29 @@ def test_same_context_does_not_update_history():
     assert repeated.stability.item() == 1.0
 
 
+def test_history_counts_consecutive_top1_matches():
+    first = _observe([0.7, 0.2, 0.08, 0.02])
+    second = _observe(
+        [0.65, 0.25, 0.08, 0.02],
+        history=first.next_history,
+        version=1,
+    )
+    third = _observe(
+        [0.6, 0.3, 0.08, 0.02],
+        history=second.next_history,
+        version=2,
+    )
+    changed = _observe(
+        [0.2, 0.7, 0.08, 0.02],
+        history=third.next_history,
+        version=3,
+    )
+    assert first.consecutive_top1_matches == 0
+    assert second.consecutive_top1_matches == 1
+    assert third.consecutive_top1_matches == 2
+    assert changed.consecutive_top1_matches == 0
+
+
 def test_distribution_change_lowers_stability_and_reliability():
     first = _observe([0.9, 0.08, 0.01, 0.01])
     changed = _observe(
@@ -94,6 +117,25 @@ def test_distribution_change_lowers_stability_and_reliability():
         contrast, relevance, changed.stability.reshape(1)
     )
     assert 0.0 <= unstable.item() < stable.item() <= contrast.item()
+
+
+def test_history_penalty_scale_can_veto_an_unstable_candidate():
+    contrast = torch.tensor([0.95])
+    relevance = torch.tensor([0.05])
+    instability = torch.tensor([0.0])
+    default = history_adjusted_reliability(
+        contrast,
+        relevance,
+        instability,
+    )
+    amplified = history_adjusted_reliability(
+        contrast,
+        relevance,
+        instability,
+        penalty_scale=8.0,
+    )
+    assert default.item() > 0.9
+    assert amplified.item() < 0.9
 
 
 def test_sparse_jsd_tracks_dense_jsd_for_top_heavy_distributions():
@@ -265,6 +307,7 @@ def test_history_ccaw_decoder_terminates_and_reports_state():
         return_report=True,
         history_enabled=True,
         history_top_v_tokens=2,
+        history_anchor_min_consistent=2,
         ccaw_enabled=True,
         ccaw_max_mask_capacity=3,
         ccaw_expand_step=1,
@@ -280,5 +323,7 @@ def test_history_ccaw_decoder_terminates_and_reports_state():
     assert output[0, 3:].tolist() == [1, 1, 1]
     assert report["history_enabled"]
     assert report["ccaw_enabled"]
+    assert report["history_anchor_min_consistent"] == 2
+    assert report["history_anchor_forced_deferrals"] == 2
     assert report["history_observations"] > 0
     assert report["context_versions"] == report["model_evaluations"]

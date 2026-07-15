@@ -90,6 +90,8 @@ class MMaDA(BaseModel):
                  vchd_history_enabled=False,
                  vchd_history_top_v=8,
                  vchd_history_ema_decay=0.7,
+                 vchd_history_penalty_scale=1.0,
+                 vchd_history_anchor_min_consistent=0,
                  vchd_ccaw_enabled=False,
                  vchd_ccaw_max_capacity=64,
                  vchd_ccaw_pressure_decay=0.8,
@@ -170,6 +172,18 @@ class MMaDA(BaseModel):
             os.getenv(
                 'MMADA_VCHD_HISTORY_EMA_DECAY',
                 vchd_history_ema_decay,
+            )
+        )
+        self.vchd_history_penalty_scale = float(
+            os.getenv(
+                'MMADA_VCHD_HISTORY_PENALTY_SCALE',
+                vchd_history_penalty_scale,
+            )
+        )
+        self.vchd_history_anchor_min_consistent = int(
+            os.getenv(
+                'MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT',
+                vchd_history_anchor_min_consistent,
             )
         )
         self.vchd_ccaw_enabled = (
@@ -406,6 +420,10 @@ class MMaDA(BaseModel):
                 history_enabled=self.vchd_history_enabled,
                 history_top_v_tokens=self.vchd_history_top_v,
                 history_ema_decay=self.vchd_history_ema_decay,
+                history_penalty_scale=self.vchd_history_penalty_scale,
+                history_anchor_min_consistent=(
+                    self.vchd_history_anchor_min_consistent
+                ),
                 ccaw_enabled=self.vchd_ccaw_enabled,
                 ccaw_max_mask_capacity=self.vchd_ccaw_max_capacity,
                 ccaw_pressure_ema_decay=self.vchd_ccaw_pressure_decay,
@@ -421,6 +439,9 @@ class MMaDA(BaseModel):
                 f"window={self.vchd_config.mask_capacity}, "
                 f"max_commit={self.vchd_config.max_commit_per_iteration}, "
                 f"history={self.vchd_config.history_enabled}, "
+                f"history_scale={self.vchd_config.history_penalty_scale}, "
+                f"anchor_consistency="
+                f"{self.vchd_config.history_anchor_min_consistent}, "
                 f"ccaw={self.vchd_config.ccaw_enabled}, "
                 f"cache={self.vchd_config.cache_type}, "
                 f"cache_refresh={self.vchd_config.cache_refresh_interval}, "

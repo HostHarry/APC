@@ -92,6 +92,41 @@ class MMaDA(BaseModel):
                  vchd_history_ema_decay=0.7,
                  vchd_history_penalty_scale=1.0,
                  vchd_history_anchor_min_consistent=0,
+                 vchd_ccd_history_enabled=False,
+                 vchd_ccd_history_length=2,
+                 vchd_ccd_top_v_positions=64,
+                 vchd_adaptive_temporal_enabled=False,
+                 vchd_adaptive_temporal_loglogistic_scale=3.20,
+                 vchd_adaptive_temporal_loglogistic_shape=8.0,
+                 vchd_adaptive_temporal_loglogistic_offset=1.0,
+                 vchd_adaptive_temporal_tail_mix_max=1.0,
+                 vchd_adaptive_temporal_exposure_scale=0.10,
+                 vchd_adaptive_temporal_relevance_scale=0.01,
+                 vchd_adaptive_temporal_conflict_scale=0.002,
+                 vchd_unified_trajectory_enabled=False,
+                 vchd_unified_trajectory_top_k=4,
+                 vchd_unified_trajectory_window_size=64,
+                 vchd_unified_trajectory_semantic_std_scale=0.25,
+                 vchd_unified_trajectory_gain_uncertainty_scale=1.0,
+                 vchd_unified_trajectory_visual_weight=0.5,
+                 vchd_unified_trajectory_adaptive_visual_relevance=True,
+                 vchd_unified_trajectory_relevance_scale=0.01,
+                 vchd_unified_trajectory_observation_scale=2.0,
+                 vchd_unified_trajectory_exposure_scale=0.10,
+                 vchd_unified_trajectory_uncertainty_scale=1.0,
+                 vchd_unified_trajectory_stale_decay=0.85,
+                 vchd_unified_trajectory_history_limit=8,
+                 vchd_unified_trajectory_opposed_threshold=0.05,
+                 vchd_counterfactual_exposure_mode='off',
+                 vchd_counterfactual_exposure_window_size=64,
+                 vchd_counterfactual_exposure_distance_scale=8.0,
+                 vchd_counterfactual_exposure_text_exposure_floor=0.25,
+                 vchd_counterfactual_exposure_positive_threshold=0.05,
+                 vchd_counterfactual_exposure_negative_threshold=0.05,
+                 vchd_counterfactual_exposure_min_effective_exposure=1.0,
+                 vchd_counterfactual_exposure_neutral_tau_contrast=0.95,
+                 vchd_counterfactual_exposure_lower_bound_scale=1.0,
+                 vchd_counterfactual_exposure_flip_decay=0.0,
                  vchd_ccaw_enabled=False,
                  vchd_ccaw_mode='legacy',
                  vchd_ccaw_block_size=32,
@@ -188,6 +223,222 @@ class MMaDA(BaseModel):
             os.getenv(
                 'MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT',
                 vchd_history_anchor_min_consistent,
+            )
+        )
+        self.vchd_ccd_history_enabled = (
+            os.getenv(
+                'MMADA_VCHD_CCD_HISTORY',
+                '1' if vchd_ccd_history_enabled else '0',
+            )
+            == '1'
+        )
+        self.vchd_ccd_history_length = int(
+            os.getenv(
+                'MMADA_VCHD_CCD_HISTORY_LENGTH',
+                vchd_ccd_history_length,
+            )
+        )
+        self.vchd_ccd_top_v_positions = int(
+            os.getenv(
+                'MMADA_VCHD_CCD_TOP_V_POSITIONS',
+                vchd_ccd_top_v_positions,
+            )
+        )
+        self.vchd_adaptive_temporal_enabled = (
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL',
+                '1' if vchd_adaptive_temporal_enabled else '0',
+            )
+            == '1'
+        )
+        self.vchd_adaptive_temporal_loglogistic_scale = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SCALE',
+                vchd_adaptive_temporal_loglogistic_scale,
+            )
+        )
+        self.vchd_adaptive_temporal_loglogistic_shape = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SHAPE',
+                vchd_adaptive_temporal_loglogistic_shape,
+            )
+        )
+        self.vchd_adaptive_temporal_loglogistic_offset = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_OFFSET',
+                vchd_adaptive_temporal_loglogistic_offset,
+            )
+        )
+        self.vchd_adaptive_temporal_tail_mix_max = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_TAIL_MIX_MAX',
+                vchd_adaptive_temporal_tail_mix_max,
+            )
+        )
+        self.vchd_adaptive_temporal_exposure_scale = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_EXPOSURE_SCALE',
+                vchd_adaptive_temporal_exposure_scale,
+            )
+        )
+        self.vchd_adaptive_temporal_relevance_scale = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_RELEVANCE_SCALE',
+                vchd_adaptive_temporal_relevance_scale,
+            )
+        )
+        self.vchd_adaptive_temporal_conflict_scale = float(
+            os.getenv(
+                'MMADA_VCHD_ADAPTIVE_TEMPORAL_CONFLICT_SCALE',
+                vchd_adaptive_temporal_conflict_scale,
+            )
+        )
+        self.vchd_unified_trajectory_enabled = (
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY',
+                '1' if vchd_unified_trajectory_enabled else '0',
+            )
+            == '1'
+        )
+        self.vchd_unified_trajectory_top_k = int(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_TOP_K',
+                vchd_unified_trajectory_top_k,
+            )
+        )
+        self.vchd_unified_trajectory_window_size = int(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_WINDOW_SIZE',
+                vchd_unified_trajectory_window_size,
+            )
+        )
+        self.vchd_unified_trajectory_semantic_std_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_SEMANTIC_STD_SCALE',
+                vchd_unified_trajectory_semantic_std_scale,
+            )
+        )
+        self.vchd_unified_trajectory_gain_uncertainty_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_GAIN_UNCERTAINTY_SCALE',
+                vchd_unified_trajectory_gain_uncertainty_scale,
+            )
+        )
+        self.vchd_unified_trajectory_visual_weight = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_VISUAL_WEIGHT',
+                vchd_unified_trajectory_visual_weight,
+            )
+        )
+        self.vchd_unified_trajectory_adaptive_visual_relevance = (
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_ADAPTIVE_VISUAL_RELEVANCE',
+                (
+                    '1'
+                    if vchd_unified_trajectory_adaptive_visual_relevance
+                    else '0'
+                ),
+            )
+            == '1'
+        )
+        self.vchd_unified_trajectory_relevance_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_RELEVANCE_SCALE',
+                vchd_unified_trajectory_relevance_scale,
+            )
+        )
+        self.vchd_unified_trajectory_observation_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_OBSERVATION_SCALE',
+                vchd_unified_trajectory_observation_scale,
+            )
+        )
+        self.vchd_unified_trajectory_exposure_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_EXPOSURE_SCALE',
+                vchd_unified_trajectory_exposure_scale,
+            )
+        )
+        self.vchd_unified_trajectory_uncertainty_scale = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_UNCERTAINTY_SCALE',
+                vchd_unified_trajectory_uncertainty_scale,
+            )
+        )
+        self.vchd_unified_trajectory_stale_decay = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_STALE_DECAY',
+                vchd_unified_trajectory_stale_decay,
+            )
+        )
+        self.vchd_unified_trajectory_history_limit = int(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_HISTORY_LIMIT',
+                vchd_unified_trajectory_history_limit,
+            )
+        )
+        self.vchd_unified_trajectory_opposed_threshold = float(
+            os.getenv(
+                'MMADA_VCHD_UNIFIED_TRAJECTORY_OPPOSED_THRESHOLD',
+                vchd_unified_trajectory_opposed_threshold,
+            )
+        )
+        self.vchd_counterfactual_exposure_mode = os.getenv(
+            'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_MODE',
+            vchd_counterfactual_exposure_mode,
+        )
+        self.vchd_counterfactual_exposure_window_size = int(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_WINDOW_SIZE',
+                vchd_counterfactual_exposure_window_size,
+            )
+        )
+        self.vchd_counterfactual_exposure_distance_scale = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_DISTANCE_SCALE',
+                vchd_counterfactual_exposure_distance_scale,
+            )
+        )
+        self.vchd_counterfactual_exposure_text_exposure_floor = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_TEXT_EXPOSURE_FLOOR',
+                vchd_counterfactual_exposure_text_exposure_floor,
+            )
+        )
+        self.vchd_counterfactual_exposure_positive_threshold = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_POSITIVE_THRESHOLD',
+                vchd_counterfactual_exposure_positive_threshold,
+            )
+        )
+        self.vchd_counterfactual_exposure_negative_threshold = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_NEGATIVE_THRESHOLD',
+                vchd_counterfactual_exposure_negative_threshold,
+            )
+        )
+        self.vchd_counterfactual_exposure_min_effective_exposure = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_MIN_EFFECTIVE_EXPOSURE',
+                vchd_counterfactual_exposure_min_effective_exposure,
+            )
+        )
+        self.vchd_counterfactual_exposure_neutral_tau_contrast = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_NEUTRAL_TAU_CONTRAST',
+                vchd_counterfactual_exposure_neutral_tau_contrast,
+            )
+        )
+        self.vchd_counterfactual_exposure_lower_bound_scale = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_LOWER_BOUND_SCALE',
+                vchd_counterfactual_exposure_lower_bound_scale,
+            )
+        )
+        self.vchd_counterfactual_exposure_flip_decay = float(
+            os.getenv(
+                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_FLIP_DECAY',
+                vchd_counterfactual_exposure_flip_decay,
             )
         )
         self.vchd_ccaw_enabled = (
@@ -452,6 +703,8 @@ class MMaDA(BaseModel):
                     self.vchd_mask_capacity,
                     self.vchd_ccaw_block_size,
                     self.vchd_ccaw_max_capacity,
+                    self.vchd_counterfactual_exposure_window_size,
+                    self.vchd_unified_trajectory_window_size,
                 ),
                 max_commit_per_iteration=self.vchd_max_commit,
                 fallback_to_raw=self.vchd_fallback_to_raw,
@@ -479,6 +732,105 @@ class MMaDA(BaseModel):
                 history_anchor_min_consistent=(
                     self.vchd_history_anchor_min_consistent
                 ),
+                ccd_history_enabled=self.vchd_ccd_history_enabled,
+                ccd_history_length=self.vchd_ccd_history_length,
+                ccd_top_v_positions=self.vchd_ccd_top_v_positions,
+                adaptive_temporal_enabled=(
+                    self.vchd_adaptive_temporal_enabled
+                ),
+                adaptive_temporal_loglogistic_scale=(
+                    self.vchd_adaptive_temporal_loglogistic_scale
+                ),
+                adaptive_temporal_loglogistic_shape=(
+                    self.vchd_adaptive_temporal_loglogistic_shape
+                ),
+                adaptive_temporal_loglogistic_offset=(
+                    self.vchd_adaptive_temporal_loglogistic_offset
+                ),
+                adaptive_temporal_tail_mix_max=(
+                    self.vchd_adaptive_temporal_tail_mix_max
+                ),
+                adaptive_temporal_exposure_scale=(
+                    self.vchd_adaptive_temporal_exposure_scale
+                ),
+                adaptive_temporal_relevance_scale=(
+                    self.vchd_adaptive_temporal_relevance_scale
+                ),
+                adaptive_temporal_conflict_scale=(
+                    self.vchd_adaptive_temporal_conflict_scale
+                ),
+                unified_trajectory_enabled=(
+                    self.vchd_unified_trajectory_enabled
+                ),
+                unified_trajectory_top_k=(
+                    self.vchd_unified_trajectory_top_k
+                ),
+                unified_trajectory_window_size=(
+                    self.vchd_unified_trajectory_window_size
+                ),
+                unified_trajectory_semantic_std_scale=(
+                    self.vchd_unified_trajectory_semantic_std_scale
+                ),
+                unified_trajectory_gain_uncertainty_scale=(
+                    self.vchd_unified_trajectory_gain_uncertainty_scale
+                ),
+                unified_trajectory_visual_weight=(
+                    self.vchd_unified_trajectory_visual_weight
+                ),
+                unified_trajectory_adaptive_visual_relevance=(
+                    self.vchd_unified_trajectory_adaptive_visual_relevance
+                ),
+                unified_trajectory_relevance_scale=(
+                    self.vchd_unified_trajectory_relevance_scale
+                ),
+                unified_trajectory_observation_scale=(
+                    self.vchd_unified_trajectory_observation_scale
+                ),
+                unified_trajectory_exposure_scale=(
+                    self.vchd_unified_trajectory_exposure_scale
+                ),
+                unified_trajectory_uncertainty_scale=(
+                    self.vchd_unified_trajectory_uncertainty_scale
+                ),
+                unified_trajectory_stale_decay=(
+                    self.vchd_unified_trajectory_stale_decay
+                ),
+                unified_trajectory_history_limit=(
+                    self.vchd_unified_trajectory_history_limit
+                ),
+                unified_trajectory_opposed_threshold=(
+                    self.vchd_unified_trajectory_opposed_threshold
+                ),
+                counterfactual_exposure_mode=(
+                    self.vchd_counterfactual_exposure_mode
+                ),
+                counterfactual_exposure_window_size=(
+                    self.vchd_counterfactual_exposure_window_size
+                ),
+                counterfactual_exposure_distance_scale=(
+                    self.vchd_counterfactual_exposure_distance_scale
+                ),
+                counterfactual_exposure_text_exposure_floor=(
+                    self.vchd_counterfactual_exposure_text_exposure_floor
+                ),
+                counterfactual_exposure_positive_threshold=(
+                    self.vchd_counterfactual_exposure_positive_threshold
+                ),
+                counterfactual_exposure_negative_threshold=(
+                    self.vchd_counterfactual_exposure_negative_threshold
+                ),
+                counterfactual_exposure_min_effective_exposure=(
+                    self.vchd_counterfactual_exposure_min_effective_exposure
+                ),
+                counterfactual_exposure_neutral_tau_contrast=(
+                    self.vchd_counterfactual_exposure_neutral_tau_contrast
+                ),
+                counterfactual_exposure_lower_bound_scale=(
+                    self.vchd_counterfactual_exposure_lower_bound_scale
+                ),
+                counterfactual_exposure_flip_decay=(
+                    self.vchd_counterfactual_exposure_flip_decay
+                ),
                 ccaw_enabled=self.vchd_ccaw_enabled,
                 ccaw_mode=self.vchd_ccaw_mode,
                 ccaw_block_size=self.vchd_ccaw_block_size,
@@ -504,6 +856,23 @@ class MMaDA(BaseModel):
                 f"history_scale={self.vchd_config.history_penalty_scale}, "
                 f"anchor_consistency="
                 f"{self.vchd_config.history_anchor_min_consistent}, "
+                f"ccd_history={self.vchd_config.ccd_history_enabled}, "
+                f"ccd_length={self.vchd_config.ccd_history_length}, "
+                f"ccd_top_v={self.vchd_config.ccd_top_v_positions}, "
+                f"adaptive_temporal="
+                f"{self.vchd_config.adaptive_temporal_enabled}, "
+                f"adaptive_kernel=loglogistic, "
+                f"adaptive_scale="
+                f"{self.vchd_config.adaptive_temporal_loglogistic_scale}, "
+                f"adaptive_shape="
+                f"{self.vchd_config.adaptive_temporal_loglogistic_shape}, "
+                f"unified_trajectory="
+                f"{self.vchd_config.unified_trajectory_enabled}, "
+                f"unified_top_k={self.vchd_config.unified_trajectory_top_k}, "
+                f"unified_visual_weight="
+                f"{self.vchd_config.unified_trajectory_visual_weight}, "
+                f"unified_adaptive_visual="
+                f"{self.vchd_config.unified_trajectory_adaptive_visual_relevance}, "
                 f"ccaw={self.vchd_config.ccaw_enabled}, "
                 f"ccaw_mode={self.vchd_config.ccaw_mode}, "
                 f"ccaw_block={self.vchd_config.ccaw_block_size}, "
@@ -905,6 +1274,111 @@ class MMaDA(BaseModel):
                         ),
                         "history_anchor_min_consistent": (
                             self.vchd_config.history_anchor_min_consistent
+                        ),
+                        "ccd_history_enabled": (
+                            self.vchd_config.ccd_history_enabled
+                        ),
+                        "ccd_history_length": (
+                            self.vchd_config.ccd_history_length
+                        ),
+                        "ccd_top_v_positions": (
+                            self.vchd_config.ccd_top_v_positions
+                        ),
+                        "adaptive_temporal_enabled": (
+                            self.vchd_config.adaptive_temporal_enabled
+                        ),
+                        "adaptive_temporal_loglogistic_scale": (
+                            self.vchd_config.adaptive_temporal_loglogistic_scale
+                        ),
+                        "adaptive_temporal_loglogistic_shape": (
+                            self.vchd_config.adaptive_temporal_loglogistic_shape
+                        ),
+                        "adaptive_temporal_loglogistic_offset": (
+                            self.vchd_config.adaptive_temporal_loglogistic_offset
+                        ),
+                        "adaptive_temporal_tail_mix_max": (
+                            self.vchd_config.adaptive_temporal_tail_mix_max
+                        ),
+                        "adaptive_temporal_exposure_scale": (
+                            self.vchd_config.adaptive_temporal_exposure_scale
+                        ),
+                        "adaptive_temporal_relevance_scale": (
+                            self.vchd_config.adaptive_temporal_relevance_scale
+                        ),
+                        "adaptive_temporal_conflict_scale": (
+                            self.vchd_config.adaptive_temporal_conflict_scale
+                        ),
+                        "unified_trajectory_enabled": (
+                            self.vchd_config.unified_trajectory_enabled
+                        ),
+                        "unified_trajectory_top_k": (
+                            self.vchd_config.unified_trajectory_top_k
+                        ),
+                        "unified_trajectory_window_size": (
+                            self.vchd_config.unified_trajectory_window_size
+                        ),
+                        "unified_trajectory_semantic_std_scale": (
+                            self.vchd_config.unified_trajectory_semantic_std_scale
+                        ),
+                        "unified_trajectory_gain_uncertainty_scale": (
+                            self.vchd_config.unified_trajectory_gain_uncertainty_scale
+                        ),
+                        "unified_trajectory_visual_weight": (
+                            self.vchd_config.unified_trajectory_visual_weight
+                        ),
+                        "unified_trajectory_adaptive_visual_relevance": (
+                            self.vchd_config.unified_trajectory_adaptive_visual_relevance
+                        ),
+                        "unified_trajectory_relevance_scale": (
+                            self.vchd_config.unified_trajectory_relevance_scale
+                        ),
+                        "unified_trajectory_observation_scale": (
+                            self.vchd_config.unified_trajectory_observation_scale
+                        ),
+                        "unified_trajectory_exposure_scale": (
+                            self.vchd_config.unified_trajectory_exposure_scale
+                        ),
+                        "unified_trajectory_uncertainty_scale": (
+                            self.vchd_config.unified_trajectory_uncertainty_scale
+                        ),
+                        "unified_trajectory_stale_decay": (
+                            self.vchd_config.unified_trajectory_stale_decay
+                        ),
+                        "unified_trajectory_history_limit": (
+                            self.vchd_config.unified_trajectory_history_limit
+                        ),
+                        "unified_trajectory_opposed_threshold": (
+                            self.vchd_config.unified_trajectory_opposed_threshold
+                        ),
+                        "counterfactual_exposure_mode": (
+                            self.vchd_config.counterfactual_exposure_mode
+                        ),
+                        "counterfactual_exposure_window_size": (
+                            self.vchd_config.counterfactual_exposure_window_size
+                        ),
+                        "counterfactual_exposure_distance_scale": (
+                            self.vchd_config.counterfactual_exposure_distance_scale
+                        ),
+                        "counterfactual_exposure_text_exposure_floor": (
+                            self.vchd_config.counterfactual_exposure_text_exposure_floor
+                        ),
+                        "counterfactual_exposure_positive_threshold": (
+                            self.vchd_config.counterfactual_exposure_positive_threshold
+                        ),
+                        "counterfactual_exposure_negative_threshold": (
+                            self.vchd_config.counterfactual_exposure_negative_threshold
+                        ),
+                        "counterfactual_exposure_min_effective_exposure": (
+                            self.vchd_config.counterfactual_exposure_min_effective_exposure
+                        ),
+                        "counterfactual_exposure_neutral_tau_contrast": (
+                            self.vchd_config.counterfactual_exposure_neutral_tau_contrast
+                        ),
+                        "counterfactual_exposure_lower_bound_scale": (
+                            self.vchd_config.counterfactual_exposure_lower_bound_scale
+                        ),
+                        "counterfactual_exposure_flip_decay": (
+                            self.vchd_config.counterfactual_exposure_flip_decay
                         ),
                         "ccaw_enabled": self.vchd_config.ccaw_enabled,
                         "ccaw_mode": self.vchd_config.ccaw_mode,

@@ -1,59 +1,62 @@
-# Nested git dirs (single combined repo)
-**/.git/
-# Local backups after `mv .git .git.bak` (do not push)
-**/.git.bak/
-
-# Python / tooling
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-*.egg-info/
-.eggs/
-dist/
-build/
-
-# Experiments & secrets
-wandb/
-**/wandb/
-*.wandb
-.env
-.env.*
-*.pem
-*.key
-
-# LaTeX build
-*.aux
-*.bbl
-*.blg
-*.fdb_latexmk
-*.fls
-*.log
-*.out
-*.synctex.gz
-*.toc
-
-# --- Only track .gitignore, 毕业设计2/, MMada_DCD/, research/ ---
+# This checkout is a data-disk workspace.  The APC branch intentionally
+# tracks only the current MMaDA/VCHD implementation and its VLind runner.
 /*
 !/.gitignore
-!/毕业设计2/
-!/MMada_DCD/
-!/research/
-!/research/**
+!/README.md
+!/MMaDA_DCD_cloud_bundle_20260711/
+!/VLind-Bench/
 
-# MMaDA: large vendored eval assets (re-download per upstream docs)
-MMada_DCD/MMaDA/evaluation/geneval/models/
-MMada_DCD/MMaDA/evaluation/geneval/object_detector/
-MMada_DCD/MMaDA/evaluation/mmdetection/
-MMada_DCD/MMaDA/evaluation/VLMEvalKit/outputs/
-MMada_DCD/MMaDA/evaluation/lm/evals_results/
-MMada_DCD/MMaDA/results/
-MMada_DCD/MMaDA/assets/
-# Large auxiliary JSON (optional: track via Git LFS if needed)
-MMada_DCD/MMaDA/training/questions.json
+# Keep the authoritative MMaDA tree, not bundle-side artifacts.
+/MMaDA_DCD_cloud_bundle_20260711/*
+!/MMaDA_DCD_cloud_bundle_20260711/MMaDA/
 
-# Optional: local checkpoints
-# MMada_DCD/**/*.pt
-# MMada_DCD/**/*.pth
-# MMada_DCD/**/*.safetensors
+# VLind is evaluation glue only; datasets and outputs stay external.
+/VLind-Bench/*
+!/VLind-Bench/eval/
+/VLind-Bench/eval/*
+!/VLind-Bench/eval/mmada_eval.py
+!/VLind-Bench/eval/score_pipeline.py
+
+# Python and test caches.
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.py[cod]
+
+# Local environments and package-manager artifacts.
+**/.venv/
+**/venv/
+**/env/
+**/node_modules/
+**/*.egg-info/
+
+# Nested repository backups must never become vendored history.
+**/.git/
+**/.git.bak/
+**/.git.old/
+
+# Generated experiment artifacts.
+**/.cache/
+**/outputs/
+**/logs/
+**/results/
+**/runs/
+**/wandb/
+**/checkpoints/
+**/attention_*/
+**/LMUData/
+**/training/questions.json
+*.log
+
+# Model weights, tensor dumps, datasets, and archives.
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.npy
+*.npz
+*.zip
+*.tar
+*.tar.gz

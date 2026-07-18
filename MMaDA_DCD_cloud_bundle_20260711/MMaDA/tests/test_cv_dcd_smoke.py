@@ -157,6 +157,23 @@ def test_all_drop_strategies_dual_cache():
         assert out.shape == x.shape
 
 
+def test_all_drop_strategies_no_cache():
+    model = MockMMaDAModel(vocab_size=128)
+    x, decode_start, decode_end = _make_prompt_and_tokens(
+        prompt_len=32, gen_len=4)
+    for strategy in ("mask", "shuffle", "random_mask"):
+        cfg = _base_config(
+            cache_type="none",
+            causal_lambda=0.5,
+            image_drop_strategy=strategy,
+        )
+        cfg.block_size = 2
+        cfg._drop_perm = None
+        out = dispatch_cv_dcd_decode_text(
+            model, x.clone(), decode_start, decode_end, cfg)
+        assert out.shape == x.shape
+
+
 def test_return_debug_records():
     model = MockMMaDAModel()
     x, decode_start, decode_end = _make_prompt_and_tokens()

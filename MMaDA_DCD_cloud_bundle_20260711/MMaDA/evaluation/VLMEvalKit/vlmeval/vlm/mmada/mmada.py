@@ -68,7 +68,7 @@ class MMaDA(BaseModel):
                  dcd_decode_param=0.9,
                  dcd_temperature=0.0,
                  dcd_remasking='low_confidence',
-                 cv_causal_lambda=0.5,
+                 cv_causal_lambda=0.25,
                  cv_causal_clip=4.0,
                  cv_stride=1,
                  cv_image_drop='mask',
@@ -80,56 +80,27 @@ class MMaDA(BaseModel):
                  defer_tau=0.0,
                  defer_beta=1.0,
                  defer_gain_type='logit',
+                 vchd_alpha=0.25,
+                 vchd_beta=0.1,
                  vchd_tau_base=0.10,
                  vchd_tau_contrast=0.90,
                  vchd_mask_capacity=16,
                  vchd_max_commit=16,
+                 vchd_max_physical_span=128,
                  vchd_fallback_to_raw=False,
                  vchd_fallback_mask_capacity=0,
                  vchd_fallback_policy='readiness',
-                 vchd_alpha=0.5,
-                 vchd_beta=0.1,
-                 vchd_history_enabled=False,
+                 vchd_force_math_sdpa=True,
+                 vchd_cache_type='none',
+                 vchd_cache_refresh_interval=8,
+                 vchd_cache_refresh_on_pressure=True,
+                 vchd_cache_pressure_threshold=0.60,
+                 vchd_history_enabled=True,
                  vchd_history_top_v=8,
                  vchd_history_ema_decay=0.7,
                  vchd_history_penalty_scale=1.0,
                  vchd_history_anchor_min_consistent=0,
-                 vchd_ccd_history_enabled=False,
-                 vchd_ccd_history_length=2,
-                 vchd_ccd_top_v_positions=64,
-                 vchd_adaptive_temporal_enabled=False,
-                 vchd_adaptive_temporal_loglogistic_scale=3.20,
-                 vchd_adaptive_temporal_loglogistic_shape=8.0,
-                 vchd_adaptive_temporal_loglogistic_offset=1.0,
-                 vchd_adaptive_temporal_tail_mix_max=1.0,
-                 vchd_adaptive_temporal_exposure_scale=0.10,
-                 vchd_adaptive_temporal_relevance_scale=0.01,
-                 vchd_adaptive_temporal_conflict_scale=0.002,
-                 vchd_unified_trajectory_enabled=False,
-                 vchd_unified_trajectory_top_k=4,
-                 vchd_unified_trajectory_window_size=64,
-                 vchd_unified_trajectory_semantic_std_scale=0.25,
-                 vchd_unified_trajectory_gain_uncertainty_scale=1.0,
-                 vchd_unified_trajectory_visual_weight=0.5,
-                 vchd_unified_trajectory_adaptive_visual_relevance=True,
-                 vchd_unified_trajectory_relevance_scale=0.01,
-                 vchd_unified_trajectory_observation_scale=2.0,
-                 vchd_unified_trajectory_exposure_scale=0.10,
-                 vchd_unified_trajectory_uncertainty_scale=1.0,
-                 vchd_unified_trajectory_stale_decay=0.85,
-                 vchd_unified_trajectory_history_limit=8,
-                 vchd_unified_trajectory_opposed_threshold=0.05,
-                 vchd_counterfactual_exposure_mode='off',
-                 vchd_counterfactual_exposure_window_size=64,
-                 vchd_counterfactual_exposure_distance_scale=8.0,
-                 vchd_counterfactual_exposure_text_exposure_floor=0.25,
-                 vchd_counterfactual_exposure_positive_threshold=0.05,
-                 vchd_counterfactual_exposure_negative_threshold=0.05,
-                 vchd_counterfactual_exposure_min_effective_exposure=1.0,
-                 vchd_counterfactual_exposure_neutral_tau_contrast=0.95,
-                 vchd_counterfactual_exposure_lower_bound_scale=1.0,
-                 vchd_counterfactual_exposure_flip_decay=0.0,
-                 vchd_ccaw_enabled=False,
+                 vchd_ccaw_enabled=True,
                  vchd_ccaw_mode='legacy',
                  vchd_ccaw_block_size=32,
                  vchd_ccaw_min_commit=1,
@@ -140,10 +111,6 @@ class MMaDA(BaseModel):
                  vchd_ccaw_expand_step=8,
                  vchd_ccaw_shrink_step=4,
                  vchd_ccaw_pressure_filter='none',
-                 vchd_cache_type='none',
-                 vchd_cache_refresh_interval=8,
-                 vchd_cache_refresh_on_pressure=True,
-                 vchd_cache_pressure_threshold=0.60,
                  **kwargs):
         self.use_cot = (os.getenv('USE_COT') == '1')
         print(f"use_cot: {self.use_cot}")
@@ -176,371 +143,6 @@ class MMaDA(BaseModel):
         self.defer_tau = float(os.getenv('MMADA_DEFER_TAU', defer_tau))
         self.defer_beta = float(os.getenv('MMADA_DEFER_BETA', defer_beta))
         self.defer_gain_type = os.getenv('MMADA_DEFER_GAIN_TYPE', defer_gain_type)
-        self.vchd_tau_base = float(
-            os.getenv('MMADA_VCHD_TAU_BASE', vchd_tau_base)
-        )
-        self.vchd_tau_contrast = float(
-            os.getenv('MMADA_VCHD_TAU_CONTRAST', vchd_tau_contrast)
-        )
-        self.vchd_mask_capacity = int(
-            os.getenv('MMADA_VCHD_MASK_CAPACITY', vchd_mask_capacity)
-        )
-        self.vchd_max_commit = int(
-            os.getenv('MMADA_VCHD_MAX_COMMIT', vchd_max_commit)
-        )
-        self.vchd_fallback_to_raw = (
-            os.getenv(
-                'MMADA_VCHD_FALLBACK_TO_RAW',
-                '1' if vchd_fallback_to_raw else '0',
-            )
-            == '1'
-        )
-        self.vchd_fallback_mask_capacity = int(
-            os.getenv(
-                'MMADA_VCHD_FALLBACK_CAPACITY',
-                vchd_fallback_mask_capacity,
-            )
-        )
-        self.vchd_fallback_policy = os.getenv(
-            'MMADA_VCHD_FALLBACK_POLICY',
-            vchd_fallback_policy,
-        )
-        self.vchd_alpha = float(
-            os.getenv('MMADA_VCHD_ALPHA', vchd_alpha)
-        )
-        self.vchd_beta = float(
-            os.getenv('MMADA_VCHD_BETA', vchd_beta)
-        )
-        self.vchd_history_enabled = (
-            os.getenv(
-                'MMADA_VCHD_HISTORY',
-                '1' if vchd_history_enabled else '0',
-            )
-            == '1'
-        )
-        self.vchd_history_top_v = int(
-            os.getenv('MMADA_VCHD_HISTORY_TOP_V', vchd_history_top_v)
-        )
-        self.vchd_history_ema_decay = float(
-            os.getenv(
-                'MMADA_VCHD_HISTORY_EMA_DECAY',
-                vchd_history_ema_decay,
-            )
-        )
-        self.vchd_history_penalty_scale = float(
-            os.getenv(
-                'MMADA_VCHD_HISTORY_PENALTY_SCALE',
-                vchd_history_penalty_scale,
-            )
-        )
-        self.vchd_history_anchor_min_consistent = int(
-            os.getenv(
-                'MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT',
-                vchd_history_anchor_min_consistent,
-            )
-        )
-        self.vchd_ccd_history_enabled = (
-            os.getenv(
-                'MMADA_VCHD_CCD_HISTORY',
-                '1' if vchd_ccd_history_enabled else '0',
-            )
-            == '1'
-        )
-        self.vchd_ccd_history_length = int(
-            os.getenv(
-                'MMADA_VCHD_CCD_HISTORY_LENGTH',
-                vchd_ccd_history_length,
-            )
-        )
-        self.vchd_ccd_top_v_positions = int(
-            os.getenv(
-                'MMADA_VCHD_CCD_TOP_V_POSITIONS',
-                vchd_ccd_top_v_positions,
-            )
-        )
-        self.vchd_adaptive_temporal_enabled = (
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL',
-                '1' if vchd_adaptive_temporal_enabled else '0',
-            )
-            == '1'
-        )
-        self.vchd_adaptive_temporal_loglogistic_scale = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SCALE',
-                vchd_adaptive_temporal_loglogistic_scale,
-            )
-        )
-        self.vchd_adaptive_temporal_loglogistic_shape = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SHAPE',
-                vchd_adaptive_temporal_loglogistic_shape,
-            )
-        )
-        self.vchd_adaptive_temporal_loglogistic_offset = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_OFFSET',
-                vchd_adaptive_temporal_loglogistic_offset,
-            )
-        )
-        self.vchd_adaptive_temporal_tail_mix_max = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_TAIL_MIX_MAX',
-                vchd_adaptive_temporal_tail_mix_max,
-            )
-        )
-        self.vchd_adaptive_temporal_exposure_scale = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_EXPOSURE_SCALE',
-                vchd_adaptive_temporal_exposure_scale,
-            )
-        )
-        self.vchd_adaptive_temporal_relevance_scale = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_RELEVANCE_SCALE',
-                vchd_adaptive_temporal_relevance_scale,
-            )
-        )
-        self.vchd_adaptive_temporal_conflict_scale = float(
-            os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_CONFLICT_SCALE',
-                vchd_adaptive_temporal_conflict_scale,
-            )
-        )
-        self.vchd_unified_trajectory_enabled = (
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY',
-                '1' if vchd_unified_trajectory_enabled else '0',
-            )
-            == '1'
-        )
-        self.vchd_unified_trajectory_top_k = int(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_TOP_K',
-                vchd_unified_trajectory_top_k,
-            )
-        )
-        self.vchd_unified_trajectory_window_size = int(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_WINDOW_SIZE',
-                vchd_unified_trajectory_window_size,
-            )
-        )
-        self.vchd_unified_trajectory_semantic_std_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_SEMANTIC_STD_SCALE',
-                vchd_unified_trajectory_semantic_std_scale,
-            )
-        )
-        self.vchd_unified_trajectory_gain_uncertainty_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_GAIN_UNCERTAINTY_SCALE',
-                vchd_unified_trajectory_gain_uncertainty_scale,
-            )
-        )
-        self.vchd_unified_trajectory_visual_weight = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_VISUAL_WEIGHT',
-                vchd_unified_trajectory_visual_weight,
-            )
-        )
-        self.vchd_unified_trajectory_adaptive_visual_relevance = (
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_ADAPTIVE_VISUAL_RELEVANCE',
-                (
-                    '1'
-                    if vchd_unified_trajectory_adaptive_visual_relevance
-                    else '0'
-                ),
-            )
-            == '1'
-        )
-        self.vchd_unified_trajectory_relevance_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_RELEVANCE_SCALE',
-                vchd_unified_trajectory_relevance_scale,
-            )
-        )
-        self.vchd_unified_trajectory_observation_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_OBSERVATION_SCALE',
-                vchd_unified_trajectory_observation_scale,
-            )
-        )
-        self.vchd_unified_trajectory_exposure_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_EXPOSURE_SCALE',
-                vchd_unified_trajectory_exposure_scale,
-            )
-        )
-        self.vchd_unified_trajectory_uncertainty_scale = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_UNCERTAINTY_SCALE',
-                vchd_unified_trajectory_uncertainty_scale,
-            )
-        )
-        self.vchd_unified_trajectory_stale_decay = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_STALE_DECAY',
-                vchd_unified_trajectory_stale_decay,
-            )
-        )
-        self.vchd_unified_trajectory_history_limit = int(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_HISTORY_LIMIT',
-                vchd_unified_trajectory_history_limit,
-            )
-        )
-        self.vchd_unified_trajectory_opposed_threshold = float(
-            os.getenv(
-                'MMADA_VCHD_UNIFIED_TRAJECTORY_OPPOSED_THRESHOLD',
-                vchd_unified_trajectory_opposed_threshold,
-            )
-        )
-        self.vchd_counterfactual_exposure_mode = os.getenv(
-            'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_MODE',
-            vchd_counterfactual_exposure_mode,
-        )
-        self.vchd_counterfactual_exposure_window_size = int(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_WINDOW_SIZE',
-                vchd_counterfactual_exposure_window_size,
-            )
-        )
-        self.vchd_counterfactual_exposure_distance_scale = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_DISTANCE_SCALE',
-                vchd_counterfactual_exposure_distance_scale,
-            )
-        )
-        self.vchd_counterfactual_exposure_text_exposure_floor = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_TEXT_EXPOSURE_FLOOR',
-                vchd_counterfactual_exposure_text_exposure_floor,
-            )
-        )
-        self.vchd_counterfactual_exposure_positive_threshold = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_POSITIVE_THRESHOLD',
-                vchd_counterfactual_exposure_positive_threshold,
-            )
-        )
-        self.vchd_counterfactual_exposure_negative_threshold = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_NEGATIVE_THRESHOLD',
-                vchd_counterfactual_exposure_negative_threshold,
-            )
-        )
-        self.vchd_counterfactual_exposure_min_effective_exposure = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_MIN_EFFECTIVE_EXPOSURE',
-                vchd_counterfactual_exposure_min_effective_exposure,
-            )
-        )
-        self.vchd_counterfactual_exposure_neutral_tau_contrast = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_NEUTRAL_TAU_CONTRAST',
-                vchd_counterfactual_exposure_neutral_tau_contrast,
-            )
-        )
-        self.vchd_counterfactual_exposure_lower_bound_scale = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_LOWER_BOUND_SCALE',
-                vchd_counterfactual_exposure_lower_bound_scale,
-            )
-        )
-        self.vchd_counterfactual_exposure_flip_decay = float(
-            os.getenv(
-                'MMADA_VCHD_COUNTERFACTUAL_EXPOSURE_FLIP_DECAY',
-                vchd_counterfactual_exposure_flip_decay,
-            )
-        )
-        self.vchd_ccaw_enabled = (
-            os.getenv(
-                'MMADA_VCHD_CCAW',
-                '1' if vchd_ccaw_enabled else '0',
-            )
-            == '1'
-        )
-        self.vchd_ccaw_mode = os.getenv(
-            'MMADA_VCHD_CCAW_MODE',
-            vchd_ccaw_mode,
-        )
-        self.vchd_ccaw_block_size = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_BLOCK_SIZE',
-                vchd_ccaw_block_size,
-            )
-        )
-        self.vchd_ccaw_min_commit = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_MIN_COMMIT',
-                vchd_ccaw_min_commit,
-            )
-        )
-        self.vchd_ccaw_qualified_budget = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_QUALIFIED_BUDGET',
-                vchd_ccaw_qualified_budget,
-            )
-        )
-        self.vchd_ccaw_max_capacity = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_MAX_CAPACITY',
-                vchd_ccaw_max_capacity,
-            )
-        )
-        self.vchd_ccaw_pressure_decay = float(
-            os.getenv(
-                'MMADA_VCHD_CCAW_PRESSURE_DECAY',
-                vchd_ccaw_pressure_decay,
-            )
-        )
-        self.vchd_ccaw_pressure_scale = float(
-            os.getenv(
-                'MMADA_VCHD_CCAW_PRESSURE_SCALE',
-                vchd_ccaw_pressure_scale,
-            )
-        )
-        self.vchd_ccaw_expand_step = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_EXPAND_STEP',
-                vchd_ccaw_expand_step,
-            )
-        )
-        self.vchd_ccaw_shrink_step = int(
-            os.getenv(
-                'MMADA_VCHD_CCAW_SHRINK_STEP',
-                vchd_ccaw_shrink_step,
-            )
-        )
-        self.vchd_ccaw_pressure_filter = os.getenv(
-            'MMADA_VCHD_CCAW_PRESSURE_FILTER',
-            vchd_ccaw_pressure_filter,
-        )
-        self.vchd_cache_type = os.getenv(
-            'MMADA_VCHD_CACHE_TYPE',
-            vchd_cache_type,
-        )
-        self.vchd_cache_refresh_interval = int(
-            os.getenv(
-                'MMADA_VCHD_CACHE_REFRESH_INTERVAL',
-                vchd_cache_refresh_interval,
-            )
-        )
-        self.vchd_cache_refresh_on_pressure = (
-            os.getenv(
-                'MMADA_VCHD_CACHE_REFRESH_ON_PRESSURE',
-                '1' if vchd_cache_refresh_on_pressure else '0',
-            )
-            == '1'
-        )
-        self.vchd_cache_pressure_threshold = float(
-            os.getenv(
-                'MMADA_VCHD_CACHE_PRESSURE_THRESHOLD',
-                vchd_cache_pressure_threshold,
-            )
-        )
         if self.decode_strategy == 'dcd':
             self.dcd_config = MMaDADecodeConfig(
                 window_type=dcd_window_type,
@@ -583,18 +185,146 @@ class MMaDA(BaseModel):
             # This happens later during __init__ when tokenizer is ready; here
             # we just record the intent in the config's docstring position.
             # See __init__ tail for the actual assignment.
+        elif self.decode_strategy in ('vchd', 'vchd_fixed'):
+            self.vchd_config = VCHDDecodeConfig(
+                alpha=float(os.getenv('MMADA_VCHD_ALPHA', vchd_alpha)),
+                beta=float(os.getenv('MMADA_VCHD_BETA', vchd_beta)),
+                tau_base=float(os.getenv(
+                    'MMADA_VCHD_TAU_BASE', vchd_tau_base)),
+                tau_contrast=float(os.getenv(
+                    'MMADA_VCHD_TAU_CONTRAST', vchd_tau_contrast)),
+                mask_capacity=int(os.getenv(
+                    'MMADA_VCHD_MASK_CAPACITY', vchd_mask_capacity)),
+                max_commit_per_iteration=int(os.getenv(
+                    'MMADA_VCHD_MAX_COMMIT', vchd_max_commit)),
+                max_physical_span=int(os.getenv(
+                    'MMADA_VCHD_MAX_PHYSICAL_SPAN',
+                    vchd_max_physical_span)),
+                fallback_to_raw=(
+                    os.getenv(
+                        'MMADA_VCHD_FALLBACK_TO_RAW',
+                        '1' if vchd_fallback_to_raw else '0',
+                    ) == '1'
+                ),
+                fallback_mask_capacity=int(os.getenv(
+                    'MMADA_VCHD_FALLBACK_CAPACITY',
+                    vchd_fallback_mask_capacity)),
+                fallback_policy=os.getenv(
+                    'MMADA_VCHD_FALLBACK_POLICY',
+                    vchd_fallback_policy),
+                force_math_sdpa=(
+                    os.getenv(
+                        'MMADA_VCHD_FORCE_MATH_SDPA',
+                        '1' if vchd_force_math_sdpa else '0',
+                    ) == '1'
+                ),
+                cache_type=os.getenv(
+                    'MMADA_VCHD_CACHE_TYPE', vchd_cache_type),
+                cache_refresh_interval=int(os.getenv(
+                    'MMADA_VCHD_CACHE_REFRESH_INTERVAL',
+                    vchd_cache_refresh_interval)),
+                cache_refresh_on_pressure=(
+                    os.getenv(
+                        'MMADA_VCHD_CACHE_REFRESH_ON_PRESSURE',
+                        '1' if vchd_cache_refresh_on_pressure else '0',
+                    ) == '1'
+                ),
+                cache_pressure_threshold=float(os.getenv(
+                    'MMADA_VCHD_CACHE_PRESSURE_THRESHOLD',
+                    vchd_cache_pressure_threshold)),
+                collect_trace=(
+                    os.getenv('MMADA_VCHD_COLLECT_TRACE', '0') == '1'
+                ),
+                return_report=(
+                    os.getenv('MMADA_VCHD_RETURN_REPORT', '0') == '1'
+                ),
+                history_enabled=(
+                    os.getenv(
+                        'MMADA_VCHD_HISTORY',
+                        '1' if vchd_history_enabled else '0',
+                    ) == '1'
+                ),
+                history_top_v_tokens=int(os.getenv(
+                    'MMADA_VCHD_HISTORY_TOP_V', vchd_history_top_v)),
+                history_ema_decay=float(os.getenv(
+                    'MMADA_VCHD_HISTORY_EMA_DECAY',
+                    vchd_history_ema_decay)),
+                history_penalty_scale=float(os.getenv(
+                    'MMADA_VCHD_HISTORY_PENALTY_SCALE',
+                    vchd_history_penalty_scale)),
+                history_anchor_min_consistent=int(os.getenv(
+                    'MMADA_VCHD_HISTORY_ANCHOR_MIN_CONSISTENT',
+                    vchd_history_anchor_min_consistent)),
+                ccaw_enabled=(
+                    os.getenv(
+                        'MMADA_VCHD_CCAW',
+                        '1' if vchd_ccaw_enabled else '0',
+                    ) == '1'
+                ),
+                ccaw_mode=os.getenv(
+                    'MMADA_VCHD_CCAW_MODE', vchd_ccaw_mode),
+                ccaw_block_size=int(os.getenv(
+                    'MMADA_VCHD_CCAW_BLOCK_SIZE',
+                    vchd_ccaw_block_size)),
+                ccaw_min_commit_per_iteration=int(os.getenv(
+                    'MMADA_VCHD_CCAW_MIN_COMMIT',
+                    vchd_ccaw_min_commit)),
+                ccaw_qualified_budget=int(os.getenv(
+                    'MMADA_VCHD_CCAW_QUALIFIED_BUDGET',
+                    vchd_ccaw_qualified_budget)),
+                ccaw_max_mask_capacity=int(os.getenv(
+                    'MMADA_VCHD_CCAW_MAX_CAPACITY',
+                    vchd_ccaw_max_capacity)),
+                ccaw_pressure_ema_decay=float(os.getenv(
+                    'MMADA_VCHD_CCAW_PRESSURE_DECAY',
+                    vchd_ccaw_pressure_decay)),
+                ccaw_pressure_scale=float(os.getenv(
+                    'MMADA_VCHD_CCAW_PRESSURE_SCALE',
+                    vchd_ccaw_pressure_scale)),
+                ccaw_expand_step=int(os.getenv(
+                    'MMADA_VCHD_CCAW_EXPAND_STEP',
+                    vchd_ccaw_expand_step)),
+                ccaw_shrink_step=int(os.getenv(
+                    'MMADA_VCHD_CCAW_SHRINK_STEP',
+                    vchd_ccaw_shrink_step)),
+                ccaw_pressure_filter=os.getenv(
+                    'MMADA_VCHD_CCAW_PRESSURE_FILTER',
+                    vchd_ccaw_pressure_filter),
+            )
+            self.vchd_config.validate()
         _defer_info = (
             f", defer_veto={self.defer_veto_type}, defer_tau={self.defer_tau}, "
             f"defer_beta={self.defer_beta}, defer_gain_type={self.defer_gain_type}"
             if self.cv_mode == 'defer_only' else ""
         )
+        _cache_type = (
+            self.dcd_config.cache_type
+            if self.dcd_config is not None
+            else (
+                self.vchd_config.cache_type
+                if self.vchd_config is not None
+                else 'N/A'
+            )
+        )
         print(f"[MMaDA] decode_strategy={self.decode_strategy}, "
-              f"cache_type={self.dcd_config.cache_type if self.dcd_config else 'N/A'}"
+              f"cache_type={_cache_type}"
               + (f", cv_lambda={self.cv_causal_lambda}, cv_drop={self.cv_image_drop}, "
                  f"cv_alpha={self.cv_alpha}, cv_mode={self.cv_mode}, "
                  f"cv_conf_source={self.cv_conf_source}, cv_gate_tau={self.cv_gate_tau}"
                  + _defer_info
-                 if self.decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd') else ""))
+                 if self.decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd')
+                 else (
+                     f", vchd_alpha={self.vchd_config.alpha}, "
+                     f"vchd_beta={self.vchd_config.beta}, "
+                     f"history={int(self.vchd_config.history_enabled)}, "
+                     f"history_scale={self.vchd_config.history_penalty_scale}, "
+                     f"history_anchor={self.vchd_config.history_anchor_min_consistent}, "
+                     f"ccaw={int(self.vchd_config.ccaw_enabled)}, "
+                     f"ccaw_mode={self.vchd_config.ccaw_mode}, "
+                     f"ccaw_pressure_scale={self.vchd_config.ccaw_pressure_scale}, "
+                     f"ccaw_pressure_filter={self.vchd_config.ccaw_pressure_filter}"
+                     if self.vchd_config is not None else ""
+                 )))
         
         if tokenizer_path is None:
             tokenizer_path = model_path
@@ -631,6 +361,40 @@ class MMaDA(BaseModel):
         ).to(self.device)
         self.model.eval()
 
+        if self.vchd_config is not None:
+            self.vchd_config.mask_id = int(
+                getattr(self.model.config, 'mask_token_id', 126336)
+            )
+            self.vchd_config.text_vocab_size = int(
+                getattr(
+                    self.model.config,
+                    'llm_vocab_size',
+                    len(self.uni_prompting.text_tokenizer),
+                )
+            )
+            eos_token_ids = []
+            eos_token_id = getattr(self.tokenizer, 'eos_token_id', None)
+            if eos_token_id is not None:
+                eos_token_ids.append(int(eos_token_id))
+            for token_name in ('<|eot|>', '<|eot_id|>'):
+                token_id = self.uni_prompting.sptids_dict.get(token_name)
+                if token_id is not None:
+                    eos_token_ids.append(int(token_id))
+            self.vchd_config.eos_token_id = (
+                tuple(dict.fromkeys(eos_token_ids)) or None
+            )
+            forbidden_ids = {
+                int(token_id)
+                for token_id in getattr(self.tokenizer, 'all_special_ids', [])
+            }
+            for token_id in self.uni_prompting.sptids_dict.values():
+                forbidden_ids.add(int(token_id))
+            forbidden_ids.add(self.vchd_config.mask_id)
+            self.vchd_config.forbidden_token_ids = tuple(
+                sorted(forbidden_ids)
+            )
+            self.vchd_config.validate()
+
         # For CV-DCD with image_drop='neutral', precompute the VQ codes of a
         # mid-gray reference image. This gives us a stable, in-distribution
         # ablation baseline (unlike replacing image tokens with the text
@@ -664,255 +428,6 @@ class MMaDA(BaseModel):
         
         self.mask_token_id = self.model.config.mask_token_id if hasattr(self.model.config, 'mask_token_id') else None
 
-        if self.decode_strategy in ('vchd', 'vchd_fixed'):
-            mask_id = int(self.mask_token_id or 126336)
-            tokenizer_vocab = self.tokenizer.get_vocab()
-            eos_ids = {
-                int(token_id)
-                for token_id in (
-                    getattr(self.tokenizer, 'eos_token_id', None),
-                    tokenizer_vocab.get('<|eot|>'),
-                    tokenizer_vocab.get('<|eot_id|>'),
-                )
-                if token_id is not None
-            }
-
-            # All tokenizer/prompt control markers are illegal answer tokens,
-            # except recognized EOS variants which remain valid terminators.
-            forbidden_ids = {mask_id}
-            forbidden_ids.update(
-                int(token_id)
-                for token_id in getattr(self.tokenizer, 'all_special_ids', ())
-                if int(token_id) not in eos_ids
-            )
-            forbidden_ids.update(
-                int(token_id)
-                for token_id, token in getattr(
-                    self.tokenizer, 'added_tokens_decoder', {}
-                ).items()
-                if getattr(token, 'special', False)
-                and int(token_id) not in eos_ids
-            )
-            forbidden_ids.update(
-                int(token_id)
-                for token_id in self.uni_prompting.sptids_dict.values()
-                if int(token_id) not in eos_ids
-            )
-            for token_name in (
-                '<|start_header_id|>',
-                '<|end_header_id|>',
-                '[iPAD]',
-                '<|r2i|>',
-            ):
-                token_id = tokenizer_vocab.get(token_name)
-                if token_id is not None and int(token_id) not in eos_ids:
-                    forbidden_ids.add(int(token_id))
-
-            normalized_eos = tuple(sorted(eos_ids))
-            self.vchd_config = VCHDDecodeConfig(
-                mask_id=mask_id,
-                eos_token_id=normalized_eos or None,
-                # Image VQ ids are offset by this exact tokenizer length in
-                # generate_mmada; model.config.llm_vocab_size is larger and
-                # would admit the first image-code ids as text candidates.
-                text_vocab_size=len(self.uni_prompting.text_tokenizer),
-                forbidden_token_ids=tuple(sorted(forbidden_ids)),
-                alpha=self.vchd_alpha,
-                beta=self.vchd_beta,
-                tau_base=self.vchd_tau_base,
-                tau_contrast=self.vchd_tau_contrast,
-                mask_capacity=self.vchd_mask_capacity,
-                max_physical_span=max(
-                    self.max_new_tokens,
-                    self.vchd_mask_capacity,
-                    self.vchd_ccaw_block_size,
-                    self.vchd_ccaw_max_capacity,
-                    self.vchd_counterfactual_exposure_window_size,
-                    self.vchd_unified_trajectory_window_size,
-                ),
-                max_commit_per_iteration=self.vchd_max_commit,
-                fallback_to_raw=self.vchd_fallback_to_raw,
-                fallback_mask_capacity=(
-                    self.vchd_fallback_mask_capacity
-                ),
-                fallback_policy=self.vchd_fallback_policy,
-                force_math_sdpa=(
-                    os.getenv('MMADA_VCHD_FORCE_MATH_SDPA', '1') == '1'
-                ),
-                cache_type=self.vchd_cache_type,
-                cache_refresh_interval=self.vchd_cache_refresh_interval,
-                cache_refresh_on_pressure=(
-                    self.vchd_cache_refresh_on_pressure
-                ),
-                cache_pressure_threshold=(
-                    self.vchd_cache_pressure_threshold
-                ),
-                collect_trace=(
-                    os.getenv('MMADA_VCHD_COLLECT_TRACE', '0') == '1'
-                ),
-                return_report=(
-                    os.getenv('MMADA_VCHD_RETURN_REPORT', '0') == '1'
-                ),
-                history_enabled=self.vchd_history_enabled,
-                history_top_v_tokens=self.vchd_history_top_v,
-                history_ema_decay=self.vchd_history_ema_decay,
-                history_penalty_scale=self.vchd_history_penalty_scale,
-                history_anchor_min_consistent=(
-                    self.vchd_history_anchor_min_consistent
-                ),
-                ccd_history_enabled=self.vchd_ccd_history_enabled,
-                ccd_history_length=self.vchd_ccd_history_length,
-                ccd_top_v_positions=self.vchd_ccd_top_v_positions,
-                adaptive_temporal_enabled=(
-                    self.vchd_adaptive_temporal_enabled
-                ),
-                adaptive_temporal_loglogistic_scale=(
-                    self.vchd_adaptive_temporal_loglogistic_scale
-                ),
-                adaptive_temporal_loglogistic_shape=(
-                    self.vchd_adaptive_temporal_loglogistic_shape
-                ),
-                adaptive_temporal_loglogistic_offset=(
-                    self.vchd_adaptive_temporal_loglogistic_offset
-                ),
-                adaptive_temporal_tail_mix_max=(
-                    self.vchd_adaptive_temporal_tail_mix_max
-                ),
-                adaptive_temporal_exposure_scale=(
-                    self.vchd_adaptive_temporal_exposure_scale
-                ),
-                adaptive_temporal_relevance_scale=(
-                    self.vchd_adaptive_temporal_relevance_scale
-                ),
-                adaptive_temporal_conflict_scale=(
-                    self.vchd_adaptive_temporal_conflict_scale
-                ),
-                unified_trajectory_enabled=(
-                    self.vchd_unified_trajectory_enabled
-                ),
-                unified_trajectory_top_k=(
-                    self.vchd_unified_trajectory_top_k
-                ),
-                unified_trajectory_window_size=(
-                    self.vchd_unified_trajectory_window_size
-                ),
-                unified_trajectory_semantic_std_scale=(
-                    self.vchd_unified_trajectory_semantic_std_scale
-                ),
-                unified_trajectory_gain_uncertainty_scale=(
-                    self.vchd_unified_trajectory_gain_uncertainty_scale
-                ),
-                unified_trajectory_visual_weight=(
-                    self.vchd_unified_trajectory_visual_weight
-                ),
-                unified_trajectory_adaptive_visual_relevance=(
-                    self.vchd_unified_trajectory_adaptive_visual_relevance
-                ),
-                unified_trajectory_relevance_scale=(
-                    self.vchd_unified_trajectory_relevance_scale
-                ),
-                unified_trajectory_observation_scale=(
-                    self.vchd_unified_trajectory_observation_scale
-                ),
-                unified_trajectory_exposure_scale=(
-                    self.vchd_unified_trajectory_exposure_scale
-                ),
-                unified_trajectory_uncertainty_scale=(
-                    self.vchd_unified_trajectory_uncertainty_scale
-                ),
-                unified_trajectory_stale_decay=(
-                    self.vchd_unified_trajectory_stale_decay
-                ),
-                unified_trajectory_history_limit=(
-                    self.vchd_unified_trajectory_history_limit
-                ),
-                unified_trajectory_opposed_threshold=(
-                    self.vchd_unified_trajectory_opposed_threshold
-                ),
-                counterfactual_exposure_mode=(
-                    self.vchd_counterfactual_exposure_mode
-                ),
-                counterfactual_exposure_window_size=(
-                    self.vchd_counterfactual_exposure_window_size
-                ),
-                counterfactual_exposure_distance_scale=(
-                    self.vchd_counterfactual_exposure_distance_scale
-                ),
-                counterfactual_exposure_text_exposure_floor=(
-                    self.vchd_counterfactual_exposure_text_exposure_floor
-                ),
-                counterfactual_exposure_positive_threshold=(
-                    self.vchd_counterfactual_exposure_positive_threshold
-                ),
-                counterfactual_exposure_negative_threshold=(
-                    self.vchd_counterfactual_exposure_negative_threshold
-                ),
-                counterfactual_exposure_min_effective_exposure=(
-                    self.vchd_counterfactual_exposure_min_effective_exposure
-                ),
-                counterfactual_exposure_neutral_tau_contrast=(
-                    self.vchd_counterfactual_exposure_neutral_tau_contrast
-                ),
-                counterfactual_exposure_lower_bound_scale=(
-                    self.vchd_counterfactual_exposure_lower_bound_scale
-                ),
-                counterfactual_exposure_flip_decay=(
-                    self.vchd_counterfactual_exposure_flip_decay
-                ),
-                ccaw_enabled=self.vchd_ccaw_enabled,
-                ccaw_mode=self.vchd_ccaw_mode,
-                ccaw_block_size=self.vchd_ccaw_block_size,
-                ccaw_min_commit_per_iteration=(
-                    self.vchd_ccaw_min_commit
-                ),
-                ccaw_qualified_budget=self.vchd_ccaw_qualified_budget,
-                ccaw_max_mask_capacity=self.vchd_ccaw_max_capacity,
-                ccaw_pressure_ema_decay=self.vchd_ccaw_pressure_decay,
-                ccaw_pressure_scale=self.vchd_ccaw_pressure_scale,
-                ccaw_expand_step=self.vchd_ccaw_expand_step,
-                ccaw_shrink_step=self.vchd_ccaw_shrink_step,
-                ccaw_pressure_filter=self.vchd_ccaw_pressure_filter,
-            )
-            self.vchd_config.validate()
-            warnings.warn(
-                "[MMaDA] History-VCHD enabled: "
-                f"alpha={self.vchd_config.alpha}, "
-                f"beta={self.vchd_config.beta}, "
-                f"tau_base={self.vchd_config.tau_base}, "
-                f"tau_contrast={self.vchd_config.tau_contrast}, "
-                f"window={self.vchd_config.mask_capacity}, "
-                f"max_commit={self.vchd_config.max_commit_per_iteration}, "
-                f"history={self.vchd_config.history_enabled}, "
-                f"history_scale={self.vchd_config.history_penalty_scale}, "
-                f"anchor_consistency="
-                f"{self.vchd_config.history_anchor_min_consistent}, "
-                f"ccd_history={self.vchd_config.ccd_history_enabled}, "
-                f"ccd_length={self.vchd_config.ccd_history_length}, "
-                f"ccd_top_v={self.vchd_config.ccd_top_v_positions}, "
-                f"adaptive_temporal="
-                f"{self.vchd_config.adaptive_temporal_enabled}, "
-                f"adaptive_kernel=loglogistic, "
-                f"adaptive_scale="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_scale}, "
-                f"adaptive_shape="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_shape}, "
-                f"unified_trajectory="
-                f"{self.vchd_config.unified_trajectory_enabled}, "
-                f"unified_top_k={self.vchd_config.unified_trajectory_top_k}, "
-                f"unified_visual_weight="
-                f"{self.vchd_config.unified_trajectory_visual_weight}, "
-                f"unified_adaptive_visual="
-                f"{self.vchd_config.unified_trajectory_adaptive_visual_relevance}, "
-                f"ccaw={self.vchd_config.ccaw_enabled}, "
-                f"ccaw_mode={self.vchd_config.ccaw_mode}, "
-                f"ccaw_block={self.vchd_config.ccaw_block_size}, "
-                f"ccaw_min_commit="
-                f"{self.vchd_config.ccaw_min_commit_per_iteration}, "
-                f"qualified_budget={self.vchd_config.ccaw_qualified_budget}, "
-                f"cache={self.vchd_config.cache_type}, "
-                f"eos={normalized_eos}"
-            )
-
         # Optional attention collection (env-controlled, OFF by default).
         # Useful for inspecting how DCD attends across the prompt; enabling on a
         # full benchmark will produce hundreds of GB of dumps, so it is gated.
@@ -927,7 +442,6 @@ class MMaDA(BaseModel):
         # the default behaviour is also collision-free.
         self.run_id = (os.getenv('MMADA_RUN_ID') or '').strip() or time.strftime('%Y%m%d_%H%M%S')
         self._attn_count = 0
-        self._vchd_report_count = 0
         if self.collect_attn:
             os.makedirs(self.attn_dir, exist_ok=True)
             warnings.warn(
@@ -998,8 +512,11 @@ class MMaDA(BaseModel):
             'optics_dataset', 'quantum_dataset', 'statistics_dataset'
         ]:
             return False
-        if listinstr(['MMDU', 'MME-RealWorld', 'MME-RealWorld-CN', 'WeMath_COT', 'MMAlignBench'], dataset):
-            # For Multi-Turn we don't have custom prompt
+        if listinstr([
+            'MMDU', 'MME-RealWorld', 'MME-RealWorld-CN', 'WeMath_COT',
+            'MMAlignBench', 'M3CoT'
+        ], dataset):
+            # These datasets provide their own specialized prompt.
             return False
         if DATASET_MODALITY(dataset) == 'VIDEO':
             # For Video benchmarks we don't have custom prompt at here
@@ -1123,6 +640,7 @@ class MMaDA(BaseModel):
         elif self.decode_strategy in ('vchd', 'vchd_fixed') and self.vchd_config is not None:
             generation_kwargs['decode_strategy'] = self.decode_strategy
             generation_kwargs['decode_config'] = self.vchd_config
+            generation_kwargs['temperature'] = 0.0
         
         if dataset:
             warnings.warn(f"Using generation config for {dataset}: {generation_kwargs}")
@@ -1260,188 +778,22 @@ class MMaDA(BaseModel):
             and isinstance(debug_info, dict)
             and self.decode_strategy in ('vchd', 'vchd_fixed')
         ):
-            report_dir = os.getenv('MMADA_VCHD_REPORT_DIR')
+            report_dir = os.getenv('MMADA_VCHD_REPORT_DIR', '').strip()
             if report_dir:
                 os.makedirs(report_dir, exist_ok=True)
                 sample_tag = os.getenv(
-                    'MMADA_CURRENT_INDEX', str(self._attn_count)
-                )
-                safe_sample_tag = str(sample_tag).replace(os.sep, '_')
+                    'MMADA_CURRENT_INDEX', str(self._attn_count))
                 report_path = os.path.join(
                     report_dir,
-                    f'vchd_report_{self.run_id}_{safe_sample_tag}_'
-                    f'{self._vchd_report_count:06d}.json',
+                    f"vchd_report_{self.run_id}_{sample_tag}.json",
                 )
-                temporary_path = report_path + '.tmp'
-                payload = {
-                    "dataset": dataset,
-                    "dataset_index": sample_tag,
-                    "run_id": self.run_id,
-                    "image": image_path,
-                    "prompt": prompt,
-                    "model_path": self.model_path,
-                    "torch_version": torch.__version__,
-                    "cuda_version": torch.version.cuda,
-                    "input_length": int(input_ids.shape[1]),
-                    "image_span": [
-                        2,
-                        2 + int(image_tokens.shape[1]),
-                    ],
-                    "vchd_config": {
-                        "alpha": self.vchd_config.alpha,
-                        "beta": self.vchd_config.beta,
-                        "tau_base": self.vchd_config.tau_base,
-                        "tau_contrast": self.vchd_config.tau_contrast,
-                        "mask_capacity": self.vchd_config.mask_capacity,
-                        "max_commit_per_iteration": (
-                            self.vchd_config.max_commit_per_iteration
-                        ),
-                        "history_enabled": (
-                            self.vchd_config.history_enabled
-                        ),
-                        "history_penalty_scale": (
-                            self.vchd_config.history_penalty_scale
-                        ),
-                        "history_anchor_min_consistent": (
-                            self.vchd_config.history_anchor_min_consistent
-                        ),
-                        "ccd_history_enabled": (
-                            self.vchd_config.ccd_history_enabled
-                        ),
-                        "ccd_history_length": (
-                            self.vchd_config.ccd_history_length
-                        ),
-                        "ccd_top_v_positions": (
-                            self.vchd_config.ccd_top_v_positions
-                        ),
-                        "adaptive_temporal_enabled": (
-                            self.vchd_config.adaptive_temporal_enabled
-                        ),
-                        "adaptive_temporal_loglogistic_scale": (
-                            self.vchd_config.adaptive_temporal_loglogistic_scale
-                        ),
-                        "adaptive_temporal_loglogistic_shape": (
-                            self.vchd_config.adaptive_temporal_loglogistic_shape
-                        ),
-                        "adaptive_temporal_loglogistic_offset": (
-                            self.vchd_config.adaptive_temporal_loglogistic_offset
-                        ),
-                        "adaptive_temporal_tail_mix_max": (
-                            self.vchd_config.adaptive_temporal_tail_mix_max
-                        ),
-                        "adaptive_temporal_exposure_scale": (
-                            self.vchd_config.adaptive_temporal_exposure_scale
-                        ),
-                        "adaptive_temporal_relevance_scale": (
-                            self.vchd_config.adaptive_temporal_relevance_scale
-                        ),
-                        "adaptive_temporal_conflict_scale": (
-                            self.vchd_config.adaptive_temporal_conflict_scale
-                        ),
-                        "unified_trajectory_enabled": (
-                            self.vchd_config.unified_trajectory_enabled
-                        ),
-                        "unified_trajectory_top_k": (
-                            self.vchd_config.unified_trajectory_top_k
-                        ),
-                        "unified_trajectory_window_size": (
-                            self.vchd_config.unified_trajectory_window_size
-                        ),
-                        "unified_trajectory_semantic_std_scale": (
-                            self.vchd_config.unified_trajectory_semantic_std_scale
-                        ),
-                        "unified_trajectory_gain_uncertainty_scale": (
-                            self.vchd_config.unified_trajectory_gain_uncertainty_scale
-                        ),
-                        "unified_trajectory_visual_weight": (
-                            self.vchd_config.unified_trajectory_visual_weight
-                        ),
-                        "unified_trajectory_adaptive_visual_relevance": (
-                            self.vchd_config.unified_trajectory_adaptive_visual_relevance
-                        ),
-                        "unified_trajectory_relevance_scale": (
-                            self.vchd_config.unified_trajectory_relevance_scale
-                        ),
-                        "unified_trajectory_observation_scale": (
-                            self.vchd_config.unified_trajectory_observation_scale
-                        ),
-                        "unified_trajectory_exposure_scale": (
-                            self.vchd_config.unified_trajectory_exposure_scale
-                        ),
-                        "unified_trajectory_uncertainty_scale": (
-                            self.vchd_config.unified_trajectory_uncertainty_scale
-                        ),
-                        "unified_trajectory_stale_decay": (
-                            self.vchd_config.unified_trajectory_stale_decay
-                        ),
-                        "unified_trajectory_history_limit": (
-                            self.vchd_config.unified_trajectory_history_limit
-                        ),
-                        "unified_trajectory_opposed_threshold": (
-                            self.vchd_config.unified_trajectory_opposed_threshold
-                        ),
-                        "counterfactual_exposure_mode": (
-                            self.vchd_config.counterfactual_exposure_mode
-                        ),
-                        "counterfactual_exposure_window_size": (
-                            self.vchd_config.counterfactual_exposure_window_size
-                        ),
-                        "counterfactual_exposure_distance_scale": (
-                            self.vchd_config.counterfactual_exposure_distance_scale
-                        ),
-                        "counterfactual_exposure_text_exposure_floor": (
-                            self.vchd_config.counterfactual_exposure_text_exposure_floor
-                        ),
-                        "counterfactual_exposure_positive_threshold": (
-                            self.vchd_config.counterfactual_exposure_positive_threshold
-                        ),
-                        "counterfactual_exposure_negative_threshold": (
-                            self.vchd_config.counterfactual_exposure_negative_threshold
-                        ),
-                        "counterfactual_exposure_min_effective_exposure": (
-                            self.vchd_config.counterfactual_exposure_min_effective_exposure
-                        ),
-                        "counterfactual_exposure_neutral_tau_contrast": (
-                            self.vchd_config.counterfactual_exposure_neutral_tau_contrast
-                        ),
-                        "counterfactual_exposure_lower_bound_scale": (
-                            self.vchd_config.counterfactual_exposure_lower_bound_scale
-                        ),
-                        "counterfactual_exposure_flip_decay": (
-                            self.vchd_config.counterfactual_exposure_flip_decay
-                        ),
-                        "ccaw_enabled": self.vchd_config.ccaw_enabled,
-                        "ccaw_mode": self.vchd_config.ccaw_mode,
-                        "ccaw_block_size": (
-                            self.vchd_config.ccaw_block_size
-                        ),
-                        "ccaw_min_commit_per_iteration": (
-                            self.vchd_config.ccaw_min_commit_per_iteration
-                        ),
-                        "ccaw_qualified_budget": (
-                            self.vchd_config.ccaw_qualified_budget
-                        ),
-                        "cache_type": self.vchd_config.cache_type,
-                        "force_math_sdpa": (
-                            self.vchd_config.force_math_sdpa
-                        ),
-                        "text_vocab_size": (
-                            self.vchd_config.text_vocab_size
-                        ),
-                        "eos_token_id": self.vchd_config.eos_token_id,
-                    },
-                    "report": debug_info,
-                }
-                with open(temporary_path, 'w', encoding='utf-8') as handle:
+                with open(report_path, 'w', encoding='utf-8') as report_file:
                     _json.dump(
-                        payload,
-                        handle,
+                        debug_info,
+                        report_file,
                         ensure_ascii=False,
-                        separators=(',', ':'),
+                        indent=2,
                     )
-                    handle.write('\n')
-                os.replace(temporary_path, report_path)
-                self._vchd_report_count += 1
         
         response_text = self.uni_prompting.text_tokenizer.batch_decode(
             output_ids[:, input_ids.shape[1]:], 

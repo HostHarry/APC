@@ -6,20 +6,12 @@ import torch
 
 from decoding import (
     CCAWState,
-    CCDHistorySnapshot,
     ContrastStats,
-    UnifiedTrajectoryBatchObservation,
     VCHDDecodeConfig,
     WindowPressure,
-    compute_contrast_stats,
-    compute_unified_trajectory_posterior,
     compute_window_pressure,
     history_adjusted_reliability,
-    loglogistic_survival_kernel,
-    observe_adaptive_temporal_history,
-    observe_ccd_history,
     observe_sparse_history,
-    observe_unified_trajectory_batch,
     pressure_adaptive_commit_budget,
     scope_next_hard_block,
     sparse_distribution_from_dense,
@@ -32,7 +24,7 @@ from decoding.selector import (
     MAX_WINDOW_TOP1_FALLBACK,
     THRESHOLD_COMMIT,
     select_ccaw_positions,
-    select_unified_trajectory_positions,
+    select_fixed_window_positions,
 )
 
 
@@ -270,6 +262,80 @@ def test_ccaw_falls_back_only_after_maximum_window():
     assert selection.positions.numel() == 1
 
 
+def test_fallback_scope_does_not_limit_qualified_search():
+    base = [0.05] * 64
+    contrast = [0.2] * 64
+    base[50] = 0.2
+    contrast[50] = 0.95
+    stats = _stats(base=base, contrast=contrast)
+    config = VCHDDecodeConfig(
+        tau_base=0.1,
+        tau_contrast=0.9,
+        mask_capacity=64,
+        max_physical_span=64,
+        fallback_mask_capacity=16,
+    )
+    selection = select_fixed_window_positions(
+        stats, torch.ones(64, dtype=torch.bool), config
+    )
+    assert selection.reason == THRESHOLD_COMMIT
+    assert selection.positions.tolist() == [50]
+
+
+def test_fallback_scope_restricts_readiness_search_to_local_masks():
+    base = [0.05] * 64
+    contrast = [0.2] * 64
+    base[7] = 0.09
+    contrast[7] = 0.8
+    base[50] = 0.099
+    contrast[50] = 0.89
+    stats = _stats(base=base, contrast=contrast)
+    mask = torch.ones(64, dtype=torch.bool)
+
+    unrestricted = VCHDDecodeConfig(
+        tau_base=0.1,
+        tau_contrast=0.9,
+        mask_capacity=64,
+        max_physical_span=64,
+    )
+    local = VCHDDecodeConfig(
+        tau_base=0.1,
+        tau_contrast=0.9,
+        mask_capacity=64,
+        max_physical_span=64,
+        fallback_mask_capacity=16,
+    )
+    unrestricted_selection = select_fixed_window_positions(
+        stats, mask, unrestricted
+    )
+    local_selection = select_fixed_window_positions(stats, mask, local)
+    assert unrestricted_selection.reason == MAX_WINDOW_TOP1_FALLBACK
+    assert unrestricted_selection.positions.tolist() == [50]
+    assert local_selection.reason == MAX_WINDOW_TOP1_FALLBACK
+    assert local_selection.positions.tolist() == [7]
+
+
+def test_leftmost_fallback_policy_ignores_local_readiness_order():
+    base = [0.05] * 32
+    contrast = [0.2] * 32
+    base[7] = 0.09
+    contrast[7] = 0.8
+    stats = _stats(base=base, contrast=contrast)
+    config = VCHDDecodeConfig(
+        tau_base=0.1,
+        tau_contrast=0.9,
+        mask_capacity=32,
+        max_physical_span=32,
+        fallback_mask_capacity=16,
+        fallback_policy="leftmost",
+    )
+    selection = select_fixed_window_positions(
+        stats, torch.ones(32, dtype=torch.bool), config
+    )
+    assert selection.reason == MAX_WINDOW_TOP1_FALLBACK
+    assert selection.positions.tolist() == [0]
+
+
 def test_ccaw_pressure_update_respects_capacity_step():
     stats = _stats(
         base=[0.05, 0.05, 0.9, 0.9],
@@ -367,6 +433,97 @@ def test_inverse_window_capacity_is_monotonic_with_pressure():
         update_inverse_ccaw_state(state, _pressure(value), config)
         capacities.append(state.mask_capacity)
     assert capacities == [8, 5, 2]
+
+
+def test_inverse_window_pressure_filter_none_uses_raw_pressure():
+    """filter='none' keeps the historical StrongShrink target formula.
+
+    The raw pressure drives the target immediately, so a lone high-pressure
+    step contracts as far as ``ccaw_shrink_step`` allows in that same step.
+    """
+
+    config = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_ema_decay=0.8,
+        ccaw_pressure_filter="none",
+    )
+    state = CCAWState(mask_capacity=8)
+    update_inverse_ccaw_state(state, _pressure(1.0), config)
+    assert state.mask_capacity == 2
+    # EMA is still maintained for observability even when unused.
+    assert math.isclose(state.pressure_ema, 0.2, abs_tol=1e-6)
+
+
+def test_inverse_window_pressure_filter_ema_smooths_target():
+    """filter='ema' smooths pressure so the first high-pressure step is muted.
+
+    With decay=0.8 the smoothed value after one step is 0.2 * pressure, so
+    the target only pulls the capacity part-way toward the minimum, and a
+    subsequent zero-pressure step lets it start climbing back.
+    """
+
+    config = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_ema_decay=0.8,
+        ccaw_pressure_filter="ema",
+    )
+    state = CCAWState(mask_capacity=8)
+    # Step 1: ema = 0.2, target = 8 - round(6 * 0.2) = 7.
+    update_inverse_ccaw_state(state, _pressure(1.0), config)
+    assert state.mask_capacity == 7
+    assert math.isclose(state.pressure_ema, 0.2, abs_tol=1e-6)
+    # Step 2: pressure drops to 0, ema decays to 0.16, target = 8 - 1 = 7.
+    update_inverse_ccaw_state(state, _pressure(0.0), config)
+    assert state.mask_capacity == 7
+    assert math.isclose(state.pressure_ema, 0.16, abs_tol=1e-6)
+
+
+def test_pressure_filter_validation_rejects_unknown_value():
+    import pytest
+
+    with pytest.raises(ValueError, match="ccaw_pressure_filter"):
+        VCHDDecodeConfig(ccaw_pressure_filter="bogus").validate()
+
+
+def test_inverse_window_pressure_scale_amplifies_shrinkage():
+    baseline = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_scale=1.0,
+    )
+    amplified = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_scale=3.0,
+    )
+    baseline_state = CCAWState(mask_capacity=2)
+    amplified_state = CCAWState(mask_capacity=2)
+    update_inverse_ccaw_state(baseline_state, _pressure(0.25), baseline)
+    update_inverse_ccaw_state(amplified_state, _pressure(0.25), amplified)
+    assert baseline_state.mask_capacity == 6
+    assert amplified_state.mask_capacity == 4
 
 
 class _Output:
@@ -475,6 +632,102 @@ def test_inverse_window_uses_current_snapshot_pressure():
     assert report["ccaw_search_expansions"] == 0
 
 
+def test_report_splits_pressure_by_qualified_vs_fallback():
+    """New report strata separate qualified commits from fallback commits.
+
+    On this configuration the model is confident enough to always qualify,
+    so the fallback split is empty and the qualified split matches the
+    total means.
+    """
+
+    mask_id = 4
+    tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 3, mask_id),
+        tau_base=0.5,
+        tau_contrast=0.5,
+        mask_capacity=2,
+        max_physical_span=3,
+        max_commit_per_iteration=2,
+        force_math_sdpa=False,
+        truncate_at_eos=False,
+        return_report=True,
+        ccaw_enabled=True,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=3,
+        ccaw_expand_step=1,
+    )
+    _, report = visual_contrast_decode(
+        _FixedModel(),
+        tokens,
+        decode_start=3,
+        decode_end=6,
+        image_span=(1, 2),
+        config=config,
+    )
+    qualified = report["ccaw_qualified_commit_count"]
+    fallback = report["ccaw_fallback_commit_count"]
+    assert qualified > 0
+    assert fallback == 0
+    assert qualified + fallback == report["context_versions"]
+    assert report["ccaw_mean_pressure_fallback"] == 0.0
+    assert report["ccaw_mean_qualification_deficit_fallback"] == 0.0
+    assert math.isclose(
+        report["ccaw_mean_pressure_qualified"],
+        report["ccaw_mean_pressure"],
+        abs_tol=1e-6,
+    )
+    assert math.isclose(
+        report["ccaw_mean_qualification_deficit_qualified"],
+        report["ccaw_mean_qualification_deficit"],
+        abs_tol=1e-6,
+    )
+    assert report["ccaw_pressure_filter"] == "none"
+
+
+def test_report_fallback_split_captures_fallback_only_run():
+    """tau_contrast=1.0 forces every commit onto the fallback path."""
+
+    mask_id = 4
+    tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 3, mask_id),
+        tau_base=0.0,
+        tau_contrast=1.0,
+        mask_capacity=2,
+        max_physical_span=3,
+        max_commit_per_iteration=2,
+        force_math_sdpa=False,
+        truncate_at_eos=False,
+        return_report=True,
+        ccaw_enabled=True,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=3,
+        ccaw_expand_step=1,
+    )
+    _, report = visual_contrast_decode(
+        _FixedModel(),
+        tokens,
+        decode_start=3,
+        decode_end=6,
+        image_span=(1, 2),
+        config=config,
+    )
+    assert report["ccaw_qualified_commit_count"] == 0
+    assert report["ccaw_fallback_commit_count"] > 0
+    assert report["ccaw_mean_pressure_qualified"] == 0.0
+    assert report["ccaw_mean_qualification_deficit_qualified"] == 0.0
+    assert math.isclose(
+        report["ccaw_mean_pressure_fallback"],
+        report["ccaw_mean_pressure"],
+        abs_tol=1e-6,
+    )
+
+
 def test_history_ccaw_decoder_terminates_and_reports_state():
     mask_id = 4
     tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
@@ -511,674 +764,4 @@ def test_history_ccaw_decoder_terminates_and_reports_state():
     assert report["history_anchor_min_consistent"] == 2
     assert report["history_anchor_forced_deferrals"] == 2
     assert report["history_observations"] > 0
-    assert report["context_versions"] == report["model_evaluations"]
-
-
-def test_trajectory_top_k_excludes_invalid_vocabulary_entries():
-    valid_vocab = torch.tensor([False, True, True, True, False])
-    visual = torch.tensor([[50.0, 6.0, 4.0, 3.0, 40.0]])
-    ablated = torch.tensor([[40.0, 3.0, 5.0, 2.0, 30.0]])
-
-    stats = compute_contrast_stats(
-        visual,
-        ablated,
-        valid_vocab,
-        alpha=0.5,
-        beta=0.1,
-        trajectory_top_k=3,
-    )
-
-    assert stats.trajectory_token_ids is not None
-    assert stats.trajectory_in_apc is not None
-    assert bool(valid_vocab[stats.trajectory_token_ids].all())
-    assert int(stats.trajectory_token_ids[0, 0]) == int(
-        stats.contrast_token[0]
-    )
-
-
-def test_unified_trajectory_first_snapshot_is_semantic_baseline_only():
-    positions = torch.tensor([3], dtype=torch.long)
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    log_probs = torch.tensor([[-0.2, -1.6]])
-    gains = torch.tensor([[0.4, -0.2]])
-
-    baseline = observe_unified_trajectory_batch(
-        {},
-        positions,
-        candidates,
-        log_probs,
-        gains,
-        torch.ones_like(candidates, dtype=torch.bool),
-        torch.zeros(1),
-        context_version=0,
-        stale_decay=0.85,
-        history_limit=4,
-        gain_uncertainty_scale=1.0,
-    )
-    assert bool(baseline.baseline_only.all())
-    assert torch.equal(
-        baseline.effective_exposure, torch.zeros_like(baseline.effective_exposure)
-    )
-    assert torch.equal(
-        baseline.effective_observations,
-        torch.zeros_like(baseline.effective_observations),
-    )
-
-    exposed = observe_unified_trajectory_batch(
-        baseline.next_history,
-        positions,
-        candidates,
-        log_probs,
-        gains,
-        torch.ones_like(candidates, dtype=torch.bool),
-        torch.full((1,), 0.5),
-        context_version=1,
-        stale_decay=0.85,
-        history_limit=4,
-        gain_uncertainty_scale=1.0,
-    )
-    assert not bool(exposed.baseline_only.any())
-    assert torch.allclose(
-        exposed.effective_exposure, torch.full_like(exposed.effective_exposure, 0.5)
-    )
-    assert torch.allclose(
-        exposed.effective_observations,
-        torch.ones_like(exposed.effective_observations),
-    )
-
-
-def test_unified_semantic_trajectory_updates_without_visual_exposure():
-    positions = torch.tensor([3], dtype=torch.long)
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    in_apc = torch.ones_like(candidates, dtype=torch.bool)
-    baseline = observe_unified_trajectory_batch(
-        {},
-        positions,
-        candidates,
-        torch.tensor([[-0.1, -2.0]]),
-        torch.zeros(1, 2),
-        in_apc,
-        torch.zeros(1),
-        context_version=0,
-        stale_decay=0.85,
-        history_limit=4,
-        gain_uncertainty_scale=1.0,
-    )
-    updated = observe_unified_trajectory_batch(
-        baseline.next_history,
-        positions,
-        candidates,
-        torch.tensor([[-1.0, -0.2]]),
-        torch.zeros(1, 2),
-        in_apc,
-        torch.zeros(1),
-        context_version=1,
-        stale_decay=0.85,
-        history_limit=4,
-        gain_uncertainty_scale=1.0,
-    )
-    assert not torch.equal(updated.semantic_mean, baseline.semantic_mean)
-    assert torch.equal(
-        updated.effective_exposure,
-        torch.zeros_like(updated.effective_exposure),
-    )
-    assert updated.updated_count == 0
-
-
-def test_unified_posterior_replaces_an_opposed_apc_candidate():
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    observation = UnifiedTrajectoryBatchObservation(
-        next_history={},
-        semantic_mean=torch.tensor([[-0.10, -0.15]]),
-        semantic_std=torch.zeros(1, 2),
-        gain_mean=torch.tensor([[-0.30, 0.50]]),
-        gain_lower=torch.tensor([[-0.30, 0.50]]),
-        gain_upper=torch.tensor([[-0.30, 0.50]]),
-        effective_exposure=torch.ones(1, 2),
-        effective_observations=torch.full((1, 2), 2.0),
-        candidate_age=torch.ones(1, 2, dtype=torch.long),
-        baseline_only=torch.zeros(1, 2, dtype=torch.bool),
-        updated_count=2,
-    )
-    posterior = compute_unified_trajectory_posterior(
-        candidates,
-        torch.tensor([[0.95, 0.60]]),
-        torch.tensor([[0.8, 0.2]]),
-        torch.ones(1, 2, dtype=torch.bool),
-        torch.ones(1),
-        observation,
-        semantic_std_scale=0.25,
-        visual_weight=1.0,
-        adaptive_visual_relevance=True,
-        observation_scale=1.0,
-        exposure_scale=0.5,
-        relevance_scale=0.1,
-        uncertainty_scale=1.0,
-        opposed_threshold=0.05,
-    )
-    assert posterior.candidate_opposed[0, 0]
-    assert int(posterior.selected_token[0]) == 2
-
-    config = VCHDDecodeConfig(
-        tau_base=0.5,
-        tau_contrast=0.5,
-        mask_capacity=1,
-        max_physical_span=1,
-        max_commit_per_iteration=1,
-        unified_trajectory_enabled=True,
-        unified_trajectory_window_size=1,
-    )
-    selection = select_unified_trajectory_positions(
-        _stats([0.9], [0.9]),
-        torch.tensor([True]),
-        config,
-        token_overrides=posterior.selected_token,
-        trajectory_confidence=posterior.selected_confidence,
-        trajectory_entropy=posterior.selected_entropy,
-        trajectory_margin=posterior.selected_margin,
-    )
-    assert selection.reason == THRESHOLD_COMMIT
-    assert selection.token_overrides is not None
-    assert selection.token_overrides.tolist() == [2]
-
-
-def test_unified_zero_exposure_is_a_valid_semantic_posterior():
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    contrast_probs = torch.tensor([[0.95, 0.05]])
-    observation = UnifiedTrajectoryBatchObservation(
-        next_history={},
-        semantic_mean=contrast_probs.log(),
-        semantic_std=torch.zeros(1, 2),
-        gain_mean=torch.tensor([[-10.0, 10.0]]),
-        gain_lower=torch.tensor([[-10.0, 10.0]]),
-        gain_upper=torch.tensor([[-10.0, 10.0]]),
-        effective_exposure=torch.zeros(1, 2),
-        effective_observations=torch.zeros(1, 2),
-        candidate_age=torch.ones(1, 2, dtype=torch.long),
-        baseline_only=torch.ones(1, 2, dtype=torch.bool),
-        updated_count=0,
-    )
-    posterior = compute_unified_trajectory_posterior(
-        candidates,
-        torch.tensor([[0.95, 0.04]]),
-        contrast_probs,
-        torch.ones(1, 2, dtype=torch.bool),
-        torch.ones(1),
-        observation,
-        semantic_std_scale=0.25,
-        visual_weight=1.0,
-        adaptive_visual_relevance=True,
-        observation_scale=2.0,
-        exposure_scale=0.1,
-        relevance_scale=0.01,
-        uncertainty_scale=1.0,
-        opposed_threshold=0.05,
-    )
-    assert torch.allclose(
-        posterior.candidate_posterior,
-        contrast_probs,
-        atol=1.0e-6,
-    )
-    assert torch.allclose(
-        posterior.selected_confidence,
-        torch.tensor([0.95]),
-        atol=1.0e-6,
-    )
-    assert torch.equal(
-        posterior.candidate_visual_weight,
-        torch.zeros_like(posterior.candidate_visual_weight),
-    )
-    assert int(posterior.selected_token[0]) == 1
-
-    selection = select_unified_trajectory_positions(
-        _stats([0.95], [0.95]),
-        torch.tensor([True]),
-        VCHDDecodeConfig(
-            tau_base=0.9,
-            tau_contrast=0.9,
-            mask_capacity=1,
-            max_physical_span=1,
-            max_commit_per_iteration=1,
-            unified_trajectory_enabled=True,
-            unified_trajectory_window_size=1,
-        ),
-        token_overrides=posterior.selected_token,
-        trajectory_confidence=posterior.selected_confidence,
-        trajectory_entropy=posterior.selected_entropy,
-        trajectory_margin=posterior.selected_margin,
-    )
-    assert selection.reason == THRESHOLD_COMMIT
-
-
-def test_unified_visual_precision_increases_smoothly_with_exposure():
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-
-    def posterior(exposure: float, observations: float):
-        observation = UnifiedTrajectoryBatchObservation(
-            next_history={},
-            semantic_mean=torch.tensor([[-0.2, -0.3]]),
-            semantic_std=torch.zeros(1, 2),
-            gain_mean=torch.tensor([[0.3, -0.2]]),
-            gain_lower=torch.tensor([[0.2, -0.3]]),
-            gain_upper=torch.tensor([[0.4, -0.1]]),
-            effective_exposure=torch.full((1, 2), exposure),
-            effective_observations=torch.full((1, 2), observations),
-            candidate_age=torch.ones(1, 2, dtype=torch.long),
-            baseline_only=torch.zeros(1, 2, dtype=torch.bool),
-            updated_count=2,
-        )
-        return compute_unified_trajectory_posterior(
-            candidates,
-            torch.tensor([[0.6, 0.4]]),
-            torch.tensor([[0.6, 0.4]]),
-            torch.ones(1, 2, dtype=torch.bool),
-            torch.full((1,), 0.01),
-            observation,
-            semantic_std_scale=0.25,
-            visual_weight=0.5,
-            adaptive_visual_relevance=True,
-            observation_scale=2.0,
-            exposure_scale=0.1,
-            relevance_scale=0.01,
-            uncertainty_scale=1.0,
-            opposed_threshold=0.05,
-        )
-
-    low = posterior(0.05, 1.0)
-    high = posterior(0.5, 3.0)
-    assert bool(
-        (
-            high.candidate_visual_weight
-            > low.candidate_visual_weight
-        ).all()
-    )
-    assert bool((high.candidate_visual_weight <= 0.5).all())
-
-
-def test_unified_fixed_visual_ablation_removes_relevance_gating():
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    observation = UnifiedTrajectoryBatchObservation(
-        next_history={},
-        semantic_mean=torch.tensor([[-0.10, -0.15]]),
-        semantic_std=torch.zeros(1, 2),
-        gain_mean=torch.tensor([[-0.30, 0.50]]),
-        gain_lower=torch.tensor([[-0.30, 0.50]]),
-        gain_upper=torch.tensor([[-0.30, 0.50]]),
-        effective_exposure=torch.ones(1, 2),
-        effective_observations=torch.full((1, 2), 2.0),
-        candidate_age=torch.ones(1, 2, dtype=torch.long),
-        baseline_only=torch.zeros(1, 2, dtype=torch.bool),
-        updated_count=2,
-    )
-    common = dict(
-        semantic_std_scale=0.25,
-        visual_weight=1.0,
-        observation_scale=1.0,
-        exposure_scale=0.5,
-        relevance_scale=0.1,
-        uncertainty_scale=1.0,
-        opposed_threshold=0.05,
-    )
-    adaptive = compute_unified_trajectory_posterior(
-        candidates,
-        torch.tensor([[0.95, 0.60]]),
-        torch.tensor([[0.8, 0.2]]),
-        torch.ones(1, 2, dtype=torch.bool),
-        torch.zeros(1),
-        observation,
-        adaptive_visual_relevance=True,
-        **common,
-    )
-    fixed = compute_unified_trajectory_posterior(
-        candidates,
-        torch.tensor([[0.95, 0.60]]),
-        torch.tensor([[0.8, 0.2]]),
-        torch.ones(1, 2, dtype=torch.bool),
-        torch.zeros(1),
-        observation,
-        adaptive_visual_relevance=False,
-        **common,
-    )
-    assert int(adaptive.selected_token[0]) == 1
-    assert int(fixed.selected_token[0]) == 2
-
-
-def test_unified_posterior_never_selects_an_out_of_apc_candidate():
-    candidates = torch.tensor([[1, 2]], dtype=torch.long)
-    observation = UnifiedTrajectoryBatchObservation(
-        next_history={},
-        semantic_mean=torch.tensor([[-2.0, -0.01]]),
-        semantic_std=torch.zeros(1, 2),
-        gain_mean=torch.tensor([[0.0, 2.0]]),
-        gain_lower=torch.tensor([[0.0, 2.0]]),
-        gain_upper=torch.tensor([[0.0, 2.0]]),
-        effective_exposure=torch.ones(1, 2),
-        effective_observations=torch.full((1, 2), 2.0),
-        candidate_age=torch.ones(1, 2, dtype=torch.long),
-        baseline_only=torch.zeros(1, 2, dtype=torch.bool),
-        updated_count=2,
-    )
-    posterior = compute_unified_trajectory_posterior(
-        candidates,
-        torch.tensor([[0.20, 0.80]]),
-        torch.tensor([[0.2, 0.0]]),
-        torch.tensor([[True, False]]),
-        torch.ones(1),
-        observation,
-        semantic_std_scale=0.0,
-        visual_weight=1.0,
-        adaptive_visual_relevance=True,
-        observation_scale=1.0,
-        exposure_scale=0.5,
-        relevance_scale=0.1,
-        uncertainty_scale=1.0,
-        opposed_threshold=0.05,
-    )
-    assert int(posterior.selected_token[0]) == 1
-
-
-def test_unified_trajectory_isolation_rejects_legacy_modules():
-    config = VCHDDecodeConfig(
-        unified_trajectory_enabled=True,
-        ccaw_enabled=True,
-    )
-    try:
-        config.validate()
-    except ValueError as error:
-        assert "unified trajectory is isolated" in str(error)
-    else:
-        raise AssertionError("Unified trajectory must reject legacy CCAW")
-
-
-def test_unified_trajectory_decoder_terminates_without_readiness_fallback():
-    mask_id = 4
-    tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
-    config = VCHDDecodeConfig(
-        mask_id=mask_id,
-        text_vocab_size=5,
-        forbidden_token_ids=(0, 3, mask_id),
-        tau_base=0.5,
-        tau_contrast=0.5,
-        mask_capacity=3,
-        max_physical_span=3,
-        max_commit_per_iteration=1,
-        force_math_sdpa=False,
-        truncate_at_eos=False,
-        collect_trace=True,
-        return_report=True,
-        unified_trajectory_enabled=True,
-        unified_trajectory_top_k=2,
-        unified_trajectory_window_size=3,
-        unified_trajectory_observation_scale=1.0,
-        unified_trajectory_exposure_scale=0.1,
-    )
-    output, report = visual_contrast_decode(
-        _FixedModel(),
-        tokens,
-        decode_start=3,
-        decode_end=6,
-        image_span=(1, 2),
-        config=config,
-    )
-    assert output[0, 3:].tolist() == [1, 1, 1]
-    assert report["unified_trajectory_enabled"]
-    assert not report["unified_trajectory_hard_readiness_gate"]
-    assert report["unified_trajectory_dual_gate_fallbacks"] == 0
-    assert report["unified_trajectory_exposure_updates"] > 0
-    assert report["context_versions"] == report["model_evaluations"]
-
-
-def test_adaptive_temporal_loglogistic_kernel_has_sharp_long_tail():
-    weights = loglogistic_survival_kernel(
-        torch.arange(8),
-        scale=3.20,
-        shape=8.0,
-        offset=1.0,
-    )
-
-    assert bool((weights[:-1] > weights[1:]).all())
-    assert float(weights[2] / weights[3]) > 4.0
-    assert float(weights[3] / weights[4]) > 4.0
-    assert float(weights[-1]) > 0.0
-
-
-def test_adaptive_temporal_zero_activation_is_exactly_ccd():
-    history = [
-        CCDHistorySnapshot(
-            positions=torch.tensor([0, 1, 2]),
-            distributions=torch.tensor(
-                [[0.8, 0.2], [0.2, 0.8], [0.5, 0.5]]
-            ),
-        ),
-        CCDHistorySnapshot(
-            positions=torch.tensor([1, 0]),
-            distributions=torch.tensor([[0.3, 0.7], [0.6, 0.4]]),
-        ),
-    ]
-    current = torch.tensor(
-        [[0.4, 0.6], [0.7, 0.3], [0.1, 0.9]]
-    )
-    visual = torch.tensor(
-        [[0.3, 0.7], [0.8, 0.2], [0.2, 0.8]]
-    )
-    confidence = torch.tensor([0.9, 0.8, 0.1])
-    apc_mass = torch.ones(3)
-    mask = torch.ones(3, dtype=torch.bool)
-    ccd = observe_ccd_history(
-        history,
-        current,
-        visual,
-        confidence,
-        apc_mass,
-        mask,
-        history_length=2,
-        top_v_positions=2,
-    )
-    adaptive = observe_adaptive_temporal_history(
-        history,
-        current,
-        visual,
-        confidence,
-        apc_mass,
-        mask,
-        torch.zeros(3),
-        torch.ones(3),
-        stability_length=2,
-        top_v_positions=2,
-        loglogistic_scale=3.20,
-        loglogistic_shape=8.0,
-        loglogistic_offset=1.0,
-        tail_mix_max=1.0,
-        exposure_scale=0.10,
-        relevance_scale=0.01,
-        conflict_scale=0.002,
-    )
-    eligible = ccd.eligible_mask
-
-    assert torch.equal(adaptive.eligible_mask, eligible)
-    assert torch.equal(adaptive.selected_token, ccd.marginal_token)
-    assert torch.allclose(
-        adaptive.base_confidence, ccd.base_confidence, atol=1e-7
-    )
-    assert torch.allclose(
-        adaptive.contrast_confidence,
-        ccd.contrast_confidence,
-        atol=1e-7,
-    )
-    assert torch.allclose(
-        adaptive.entropy[eligible],
-        ccd.marginal_entropy[eligible],
-        atol=1e-7,
-    )
-    assert bool((adaptive.tail_activation[eligible] == 0.0).all())
-    assert bool((adaptive.long_tail_mass[eligible] == 0.0).all())
-    assert torch.allclose(
-        adaptive.current_weight[eligible],
-        torch.full((2,), 1.0 / 3.0),
-        atol=1e-7,
-    )
-
-
-def test_adaptive_temporal_zero_mix_matches_ccd_decoder_behavior():
-    mask_id = 4
-    tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
-    common = dict(
-        mask_id=mask_id,
-        text_vocab_size=5,
-        forbidden_token_ids=(0, 3, mask_id),
-        tau_base=0.5,
-        tau_contrast=0.5,
-        mask_capacity=3,
-        max_physical_span=3,
-        max_commit_per_iteration=1,
-        force_math_sdpa=False,
-        truncate_at_eos=False,
-        collect_trace=True,
-        return_report=True,
-        ccd_history_length=2,
-        ccd_top_v_positions=3,
-    )
-    ccd_output, ccd_report = visual_contrast_decode(
-        _FixedModel(),
-        tokens,
-        decode_start=3,
-        decode_end=6,
-        image_span=(1, 2),
-        config=VCHDDecodeConfig(**common, ccd_history_enabled=True),
-    )
-    adaptive_output, adaptive_report = visual_contrast_decode(
-        _FixedModel(),
-        tokens,
-        decode_start=3,
-        decode_end=6,
-        image_span=(1, 2),
-        config=VCHDDecodeConfig(
-            **common,
-            adaptive_temporal_enabled=True,
-            adaptive_temporal_tail_mix_max=0.0,
-        ),
-    )
-
-    assert torch.equal(adaptive_output, ccd_output)
-    ccd_decisions = [
-        (
-            item["selected_positions"],
-            item["selected_tokens"],
-            item["commit_reason"],
-        )
-        for item in ccd_report["trace"]
-    ]
-    adaptive_decisions = [
-        (
-            item["selected_positions"],
-            item["selected_tokens"],
-            item["commit_reason"],
-        )
-        for item in adaptive_report["trace"]
-    ]
-    assert adaptive_decisions == ccd_decisions
-
-
-def test_adaptive_temporal_activation_adds_nonzero_old_history_tail():
-    recent = torch.tensor([[0.2, 0.8]])
-    old = torch.tensor([[1.0, 0.0]])
-    history = [
-        CCDHistorySnapshot(torch.tensor([0]), old),
-        CCDHistorySnapshot(torch.tensor([0]), old),
-        CCDHistorySnapshot(torch.tensor([0]), recent),
-        CCDHistorySnapshot(torch.tensor([0]), recent),
-    ]
-    kwargs = dict(
-        history=history,
-        contrast_distribution=torch.tensor([[0.0, 1.0]]),
-        visual_distribution=torch.tensor([[0.4, 0.6]]),
-        position_confidence=torch.ones(1),
-        apc_mass=torch.ones(1),
-        mask=torch.ones(1, dtype=torch.bool),
-        exposure=torch.full((1,), 10.0),
-        visual_relevance=torch.full((1,), 10.0),
-        stability_length=2,
-        top_v_positions=1,
-        loglogistic_scale=3.20,
-        loglogistic_shape=8.0,
-        loglogistic_offset=1.0,
-        exposure_scale=0.10,
-        relevance_scale=0.01,
-        conflict_scale=0.002,
-    )
-    ccd_equivalent = observe_adaptive_temporal_history(
-        **kwargs, tail_mix_max=0.0
-    )
-    long_tail = observe_adaptive_temporal_history(
-        **kwargs, tail_mix_max=1.0
-    )
-
-    assert float(long_tail.tail_activation[0]) > 0.99
-    assert float(long_tail.long_tail_mass[0]) > 0.05
-    assert long_tail.effective_history_depth[0].item() == 5
-    assert long_tail.selected_token[0].item() == 1
-    assert (
-        float(long_tail.contrast_confidence[0])
-        < float(ccd_equivalent.contrast_confidence[0])
-    )
-
-
-def test_adaptive_temporal_isolation_rejects_score_fusion():
-    config = VCHDDecodeConfig(
-        mask_id=4,
-        adaptive_temporal_enabled=True,
-        unified_trajectory_enabled=True,
-    )
-    try:
-        config.validate()
-    except ValueError as error:
-        assert "adaptive temporal posterior is isolated" in str(error)
-    else:
-        raise AssertionError(
-            "Adaptive temporal posterior must reject unified score fusion"
-        )
-
-
-def test_adaptive_temporal_decoder_reports_long_tail_diagnostics():
-    mask_id = 4
-    tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
-    config = VCHDDecodeConfig(
-        mask_id=mask_id,
-        text_vocab_size=5,
-        forbidden_token_ids=(0, 3, mask_id),
-        tau_base=0.5,
-        tau_contrast=0.5,
-        mask_capacity=3,
-        max_physical_span=3,
-        max_commit_per_iteration=1,
-        force_math_sdpa=False,
-        truncate_at_eos=False,
-        collect_trace=True,
-        return_report=True,
-        adaptive_temporal_enabled=True,
-        ccd_top_v_positions=3,
-    )
-    output, report = visual_contrast_decode(
-        _FixedModel(),
-        tokens,
-        decode_start=3,
-        decode_end=6,
-        image_span=(1, 2),
-        config=config,
-    )
-
-    assert output[0, 3:].tolist() == [1, 1, 1]
-    assert report["adaptive_temporal_enabled"]
-    assert report["adaptive_temporal_full_distribution"]
-    assert not report["adaptive_temporal_token_visual_residual"]
-    assert report["adaptive_temporal_ccd_identity_at_zero_activation"]
-    assert (
-        report["adaptive_temporal_kernel"]
-        == "shifted_loglogistic_survival"
-    )
-    assert report["adaptive_temporal_eligible_positions"] > 0
-    assert (
-        report["adaptive_temporal_mean_effective_history_depth"] >= 1.0
-    )
-    assert report["adaptive_temporal_empty_intersection_fallbacks"] == 0
     assert report["context_versions"] == report["model_evaluations"]

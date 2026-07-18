@@ -471,7 +471,7 @@ class MMadaModelLM(LLaDAModelLM):
 
             batch_size = idx.shape[0]
             if batch_size != 1:
-                raise ValueError("The phase 0--2 VCHD decoder supports batch_size=1")
+                raise ValueError("VCHD decoding supports batch_size=1")
             x = torch.full(
                 (batch_size, idx.shape[1] + max_new_tokens),
                 mask_id,

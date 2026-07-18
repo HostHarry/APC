@@ -49,6 +49,9 @@
 **/training/questions.json
 *.log
 
+# Downloadable NLTK tokenizer data — regeneratable, not source.
+**/nltk_data/
+
 # Model weights, tensor dumps, datasets, and archives.
 *.safetensors
 *.ckpt

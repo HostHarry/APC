@@ -46,7 +46,7 @@ def build_paired_attention_bias(
     *,
     device: torch.device,
 ) -> torch.FloatTensor:
-    """Build same-shape visual and visual-access-ablated additive biases."""
+    """Build visual and visual-access-ablated additive attention biases."""
 
     if seq_len <= 0:
         raise ValueError(f"seq_len must be positive, got {seq_len}")
@@ -61,13 +61,11 @@ def build_paired_attention_bias(
     )
     non_image_queries = torch.ones(seq_len, dtype=torch.bool, device=device)
     non_image_queries[image_left:image_right] = False
-    blocked = (
-        non_image_queries[:, None]
-        & (
-            (torch.arange(seq_len, device=device) >= image_left)
-            & (torch.arange(seq_len, device=device) < image_right)
-        )[None, :]
+    image_keys = (
+        (torch.arange(seq_len, device=device) >= image_left)
+        & (torch.arange(seq_len, device=device) < image_right)
     )
+    blocked = non_image_queries[:, None] & image_keys[None, :]
     bias[1, 0].masked_fill_(blocked, torch.finfo(torch.float32).min)
     return bias
 
@@ -82,7 +80,7 @@ def _normalize_attention_mask(
         return None
     if attention_mask.ndim != 2 or attention_mask.shape[0] != 1:
         raise ValueError(
-            "The phase 0--2 adapter expects a [1, sequence] attention mask"
+            "The VCHD adapter expects a [1, sequence] attention mask"
         )
     attention_mask = attention_mask.to(device=device)
     mask_len = attention_mask.shape[1]
@@ -119,7 +117,6 @@ def _math_sdpa_context(enabled: bool) -> Iterator[None]:
             yield
         return
 
-    # Compatibility with older PyTorch releases used by some MMaDA setups.
     with torch.backends.cuda.sdp_kernel(
         enable_flash=False,
         enable_math=True,
@@ -179,13 +176,9 @@ class MMaDAVisualAccessAdapter:
 
     @property
     def cache_state(self) -> Optional[PairedKVCache]:
-        """Expose cache metadata for diagnostics without merging the branches."""
-
         return self._cache_state
 
     def request_full_refresh(self, reason: str) -> None:
-        """Force the next dual-cache snapshot to rebuild both branch caches."""
-
         reason = str(reason).strip()
         if not reason:
             raise ValueError("A cache refresh reason must be non-empty")
@@ -215,9 +208,7 @@ class MMaDAVisualAccessAdapter:
 
     def _validate_tokens(self, tokens: torch.LongTensor) -> int:
         if tokens.ndim != 2 or tokens.shape[0] != 1:
-            raise ValueError(
-                "The VCHD reference adapter supports batch_size=1 only"
-            )
+            raise ValueError("The VCHD adapter supports batch_size=1 only")
         seq_len = int(tokens.shape[1])
         if self.decode_end > seq_len:
             raise ValueError(
@@ -266,7 +257,6 @@ class MMaDAVisualAccessAdapter:
                 f"{tuple(pair_logits.shape)} for sequence length {seq_len}"
             )
         visual, ablated = pair_logits.chunk(2, dim=0)
-        # clone() prevents a response slice from retaining full-sequence logits.
         return (
             visual[0, decode_start:decode_end].float().clone(),
             ablated[0, decode_start:decode_end].float().clone(),
@@ -294,14 +284,8 @@ class MMaDAVisualAccessAdapter:
                 raise RuntimeError(
                     "A paired cache seed must have batch dimension 2"
                 )
-            # Separate clones are intentional: the two branches must not share
-            # storage because replace_position updates cache tensors in place.
-            visual_layers.append(
-                (key[0:1].clone(), value[0:1].clone())
-            )
-            ablated_layers.append(
-                (key[1:2].clone(), value[1:2].clone())
-            )
+            visual_layers.append((key[0:1].clone(), value[0:1].clone()))
+            ablated_layers.append((key[1:2].clone(), value[1:2].clone()))
         return (
             BranchKVCache(
                 past_key_values=tuple(visual_layers),
@@ -459,10 +443,7 @@ class MMaDAVisualAccessAdapter:
         if remaining_masks.numel() == 0:
             raise RuntimeError("Partial refresh requested after decoding completed")
         first_mask = self.decode_start + int(remaining_masks[0].item())
-        refresh_start = min(
-            int(changed_positions[0].item()),
-            first_mask,
-        )
+        refresh_start = min(int(changed_positions[0].item()), first_mask)
         suffix_tokens = tokens[:, refresh_start:self.decode_end]
         query_tokens = int(suffix_tokens.shape[1])
         replace_position = torch.zeros_like(tokens, dtype=torch.bool)

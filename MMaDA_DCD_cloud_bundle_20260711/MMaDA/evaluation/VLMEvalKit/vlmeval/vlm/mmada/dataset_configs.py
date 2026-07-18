@@ -6,6 +6,26 @@ DEFAULT_KWARGS = {
 }
 
 DATASET_CONFIGS = {
+    "M3CoT": {
+        "max_new_tokens": 512,
+        "steps": 256,
+        "block_length": 64,
+    },
+    "M3CoT_COT": {
+        "max_new_tokens": 512,
+        "steps": 256,
+        "block_length": 64,
+    },
+    "M3CoT_DIRECT": {
+        "max_new_tokens": 64,
+        "steps": 64,
+        "block_length": 32,
+    },
+    "CHAIR": {
+        "max_new_tokens": 128,
+        "steps": 128,
+        "block_length": 64,
+    },
     "MathVista_MINI": {
         "max_new_tokens": 96,
         "steps": 96,

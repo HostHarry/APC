@@ -2,7 +2,7 @@
 
 Faithful port of the canonical implementation from LisaAnne/Hallucination
 (EMNLP 2018, Rohrbach et al. "Object Hallucination in Image Captioning"),
-adapted for Python 3 + MSCOCO val2017 + VLMEval integration.
+adapted for Python 3 + MSCOCO 2014/2017 + VLMEval integration.
 
 What was ported verbatim
 ------------------------
@@ -23,17 +23,17 @@ What differs from canonical (documented)
 - ``pattern.en.singularize`` -> ``nltk.stem.WordNetLemmatizer.lemmatize(w,'n')``.
   ``pattern`` no longer installs cleanly on Python >= 3.9.
 - ``nltk.word_tokenize`` is retained (canonical).
-- Canonical joins train+val COCO 2014; we target val2017 only, since our
-  image sample is drawn from val2017 (the ``image_id`` fields are stable across
-  2014 and 2017 splits, but we don't need train captions when scoring a val
-  subset).
+- Canonical joins train+val COCO 2014; this port accepts one COCO annotation
+  file. For canonical Karpathy Test all 5,000 IDs are in val2014 and none
+  overlap train2014, so passing val2014 is exactly equivalent to that join.
 
 Environment
 -----------
 - ``NLTK_DATA``: workspace-local NLTK data dir (installed by
   ``python -m nltk.downloader -d $NLTK_DATA punkt punkt_tab wordnet omw-1.4``).
-- ``CHAIR_COCO_ANN``: path to ``instances_val2017.json`` (required).
-- ``CHAIR_COCO_CAPS``: path to ``captions_val2017.json`` (optional; if absent,
+- ``CHAIR_COCO_ANN``: path to ``instances_val2014.json`` or
+  ``instances_val2017.json`` (required).
+- ``CHAIR_COCO_CAPS``: matching COCO captions JSON (optional; if absent,
   GT is instance-only, matching a strict-mode ablation).
 
 Public API
@@ -220,11 +220,11 @@ class CHAIRScorer:
 
     Parameters
     ----------
-    instances_json : path to ``instances_val2017.json`` (required)
-    captions_json  : path to ``captions_val2017.json`` (optional; adds a GT
+    instances_json : path to a COCO instances JSON (required)
+    captions_json  : path to the matching COCO captions JSON (optional; adds a GT
         channel derived from human-written captions, matching canonical)
     imids          : optional iterable of image_ids to restrict caption
-        loading to (small optimisation for our 200-image subset).
+        loading to (small optimisation for the selected benchmark split).
     """
 
     def __init__(self,

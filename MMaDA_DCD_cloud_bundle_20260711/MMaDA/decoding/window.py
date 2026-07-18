@@ -135,17 +135,35 @@ def update_inverse_ccaw_state(
     pressure: WindowPressure,
     config: VCHDDecodeConfig,
 ) -> None:
-    """Shrink on high pressure and expand on low pressure in the same step."""
+    """Shrink on high pressure and expand on low pressure in the same step.
+
+    ``ccaw_pressure_filter`` selects the driver:
+
+    * ``"none"`` (default) — the raw ``pressure.combined`` of the current
+      step. Historical StrongShrink behaviour; ``pressure_ema`` is still
+      maintained for observability but does not influence ``target``.
+    * ``"ema"`` — the smoothed ``state.pressure_ema`` updated with
+      ``ccaw_pressure_ema_decay``. Produces a more gradual response
+      but delays contraction after a high-pressure step.
+    """
 
     decay = float(config.ccaw_pressure_ema_decay)
     state.pressure_ema = (
         decay * float(state.pressure_ema)
         + (1.0 - decay) * float(pressure.combined)
     )
+    if config.ccaw_pressure_filter == "ema":
+        pressure_driver = float(state.pressure_ema)
+    else:
+        pressure_driver = float(pressure.combined)
     minimum = int(config.mask_capacity)
     maximum = int(config.ccaw_max_mask_capacity)
     current_pressure = min(
-        1.0, max(0.0, float(pressure.combined))
+        1.0,
+        max(
+            0.0,
+            float(config.ccaw_pressure_scale) * pressure_driver,
+        ),
     )
     target = maximum - round(
         (maximum - minimum) * current_pressure

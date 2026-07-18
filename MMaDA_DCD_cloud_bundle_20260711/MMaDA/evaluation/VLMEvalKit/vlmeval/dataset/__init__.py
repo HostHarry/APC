@@ -2,6 +2,7 @@ import warnings
 
 from .image_base import img_root_map, ImageBaseDataset
 from .image_caption import ImageCaptionDataset, CHAIRDataset
+from .m3cot import M3CoTDataset
 from .image_yorn import ImageYORNDataset
 from .image_mcq import (
     ImageMCQDataset, MMMUDataset, CustomMCQDataset, MUIRDataset, GMAIMMBenchDataset, MMERealWorld, HRBenchDataset,
@@ -195,7 +196,7 @@ IMAGE_DATASET = [
     WildDocBenchmark, MSEarthMCQ, OCR_Reasoning, PhyX, VLMBlind, CountBenchQA,
     ZEROBench, SCAM, Omni3DBench, TallyQA, _3DSRBench, AffordanceDataset,
     MMEReasoning, GOBenchDataset, SFE, ChartMimic, MMVMBench, XLRSBench, 
-    OmniEarthMCQBench
+    OmniEarthMCQBench, M3CoTDataset
 ]
 
 

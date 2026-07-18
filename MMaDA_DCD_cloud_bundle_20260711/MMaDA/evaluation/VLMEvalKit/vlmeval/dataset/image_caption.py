@@ -80,16 +80,15 @@ class ImageCaptionDataset(ImageBaseDataset):
 
 
 class CHAIRDataset(ImageBaseDataset):
-    """CHAIR hallucination benchmark on MSCOCO val2017.
+    """CHAIR hallucination benchmark on MSCOCO.
 
     - The TSV is built offline by ``scripts/build_chair_tsv.py`` and shipped
       alongside the workspace's ``LMUData/CHAIR.tsv``. No MD5 check + no
       download is performed (the classical CHAIR data comes from COCO, not
       opencompass).
     - The scorer is bundled in ``vlmeval.dataset.utils.chair`` and reads the
-      COCO instances_val2017.json indicated by ``CHAIR_COCO_ANN`` (env var);
-      failing that, it tries ``$LMUData/coco_instances_val2017.json``, then a
-      well-known LLaVA-eval mirror path.
+      COCO instances JSON indicated by ``CHAIR_COCO_ANN``. The canonical full
+      protocol uses the 5,000-image COCO2014 Karpathy Test split.
     """
 
     TYPE = 'Caption'
@@ -101,9 +100,9 @@ class CHAIRDataset(ImageBaseDataset):
     def load_data(self, dataset):
         data = super().load_data(dataset)
         if 'question' not in data.columns:
-            data['question'] = (
-                'Please describe this image in detail.' * len(data)
-            )
+            data['question'] = [
+                'Please describe this image in detail.'
+            ] * len(data)
         return data
 
     @classmethod
@@ -129,19 +128,23 @@ class CHAIRDataset(ImageBaseDataset):
         ann_path = _first_existing([
             os.environ.get('CHAIR_COCO_ANN'),
             osp.join(os.environ.get('LMUData', './LMUData'),
+                     'coco_instances_val2014.json'),
+            osp.join(os.environ.get('LMUData', './LMUData'),
                      'coco_instances_val2017.json'),
             '/home/user/大模型/LLava/data/coco/annotations/instances_val2017.json',
         ])
         if ann_path is None:
             raise FileNotFoundError(
-                'Could not locate COCO instances_val2017.json. '
-                'Set CHAIR_COCO_ANN=/path/to/instances_val2017.json.'
+                'Could not locate a COCO instances JSON. Set '
+                'CHAIR_COCO_ANN=/path/to/instances_val2014.json.'
             )
 
         cap_path = None
         if os.environ.get('CHAIR_STRICT_GT', '0') != '1':
             cap_path = _first_existing([
                 os.environ.get('CHAIR_COCO_CAPS'),
+                osp.join(os.environ.get('LMUData', './LMUData'),
+                         'coco_captions_val2014.json'),
                 osp.join(os.environ.get('LMUData', './LMUData'),
                          'coco_captions_val2017.json'),
                 '/home/user/大模型/LLava/data/coco/annotations/captions_val2017.json',

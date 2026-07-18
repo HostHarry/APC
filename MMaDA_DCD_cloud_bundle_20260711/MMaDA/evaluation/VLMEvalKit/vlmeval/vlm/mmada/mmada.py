@@ -85,6 +85,8 @@ class MMaDA(BaseModel):
                  vchd_mask_capacity=16,
                  vchd_max_commit=16,
                  vchd_fallback_to_raw=False,
+                 vchd_fallback_mask_capacity=0,
+                 vchd_fallback_policy='readiness',
                  vchd_alpha=0.5,
                  vchd_beta=0.1,
                  vchd_history_enabled=False,
@@ -92,17 +94,18 @@ class MMaDA(BaseModel):
                  vchd_history_ema_decay=0.7,
                  vchd_history_penalty_scale=1.0,
                  vchd_history_anchor_min_consistent=0,
-                 vchd_ccd_history_enabled=False,
-                 vchd_ccd_history_length=2,
-                 vchd_ccd_top_v_positions=64,
-                 vchd_adaptive_temporal_enabled=False,
-                 vchd_adaptive_temporal_loglogistic_scale=3.20,
-                 vchd_adaptive_temporal_loglogistic_shape=8.0,
-                 vchd_adaptive_temporal_loglogistic_offset=1.0,
-                 vchd_adaptive_temporal_tail_mix_max=1.0,
-                 vchd_adaptive_temporal_exposure_scale=0.10,
-                 vchd_adaptive_temporal_relevance_scale=0.01,
-                 vchd_adaptive_temporal_conflict_scale=0.002,
+                 vchd_focus_dwell_enabled=False,
+                 vchd_focus_dwell_depth=2,
+                 vchd_focus_capacity=64,
+                 vchd_focus_longtail_enabled=False,
+                 vchd_focus_longtail_kernel_scale=3.20,
+                 vchd_focus_longtail_kernel_shape=8.0,
+                 vchd_focus_longtail_kernel_offset=1.0,
+                 vchd_focus_longtail_mix_ceiling=1.0,
+                 vchd_focus_longtail_exposure_tau=0.10,
+                 vchd_focus_longtail_relevance_tau=0.01,
+                 vchd_focus_longtail_conflict_tau=0.002,
+                 vchd_focus_longtail_history_epsilon=1.0e-4,
                  vchd_unified_trajectory_enabled=False,
                  vchd_unified_trajectory_top_k=4,
                  vchd_unified_trajectory_window_size=64,
@@ -134,8 +137,10 @@ class MMaDA(BaseModel):
                  vchd_ccaw_qualified_budget=1,
                  vchd_ccaw_max_capacity=64,
                  vchd_ccaw_pressure_decay=0.8,
+                 vchd_ccaw_pressure_scale=1.0,
                  vchd_ccaw_expand_step=8,
                  vchd_ccaw_shrink_step=4,
+                 vchd_ccaw_pressure_filter='none',
                  vchd_cache_type='none',
                  vchd_cache_refresh_interval=8,
                  vchd_cache_refresh_on_pressure=True,
@@ -191,6 +196,16 @@ class MMaDA(BaseModel):
             )
             == '1'
         )
+        self.vchd_fallback_mask_capacity = int(
+            os.getenv(
+                'MMADA_VCHD_FALLBACK_CAPACITY',
+                vchd_fallback_mask_capacity,
+            )
+        )
+        self.vchd_fallback_policy = os.getenv(
+            'MMADA_VCHD_FALLBACK_POLICY',
+            vchd_fallback_policy,
+        )
         self.vchd_alpha = float(
             os.getenv('MMADA_VCHD_ALPHA', vchd_alpha)
         )
@@ -225,72 +240,78 @@ class MMaDA(BaseModel):
                 vchd_history_anchor_min_consistent,
             )
         )
-        self.vchd_ccd_history_enabled = (
+        self.vchd_focus_dwell_enabled = (
             os.getenv(
-                'MMADA_VCHD_CCD_HISTORY',
-                '1' if vchd_ccd_history_enabled else '0',
+                'MMADA_VCHD_FOCUS_DWELL',
+                '1' if vchd_focus_dwell_enabled else '0',
             )
             == '1'
         )
-        self.vchd_ccd_history_length = int(
+        self.vchd_focus_dwell_depth = int(
             os.getenv(
-                'MMADA_VCHD_CCD_HISTORY_LENGTH',
-                vchd_ccd_history_length,
+                'MMADA_VCHD_FOCUS_DWELL_DEPTH',
+                vchd_focus_dwell_depth,
             )
         )
-        self.vchd_ccd_top_v_positions = int(
+        self.vchd_focus_capacity = int(
             os.getenv(
-                'MMADA_VCHD_CCD_TOP_V_POSITIONS',
-                vchd_ccd_top_v_positions,
+                'MMADA_VCHD_FOCUS_CAPACITY',
+                vchd_focus_capacity,
             )
         )
-        self.vchd_adaptive_temporal_enabled = (
+        self.vchd_focus_longtail_enabled = (
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL',
-                '1' if vchd_adaptive_temporal_enabled else '0',
+                'MMADA_VCHD_FOCUS_LONGTAIL',
+                '1' if vchd_focus_longtail_enabled else '0',
             )
             == '1'
         )
-        self.vchd_adaptive_temporal_loglogistic_scale = float(
+        self.vchd_focus_longtail_kernel_scale = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SCALE',
-                vchd_adaptive_temporal_loglogistic_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_SCALE',
+                vchd_focus_longtail_kernel_scale,
             )
         )
-        self.vchd_adaptive_temporal_loglogistic_shape = float(
+        self.vchd_focus_longtail_kernel_shape = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SHAPE',
-                vchd_adaptive_temporal_loglogistic_shape,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_SHAPE',
+                vchd_focus_longtail_kernel_shape,
             )
         )
-        self.vchd_adaptive_temporal_loglogistic_offset = float(
+        self.vchd_focus_longtail_kernel_offset = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_OFFSET',
-                vchd_adaptive_temporal_loglogistic_offset,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_OFFSET',
+                vchd_focus_longtail_kernel_offset,
             )
         )
-        self.vchd_adaptive_temporal_tail_mix_max = float(
+        self.vchd_focus_longtail_mix_ceiling = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_TAIL_MIX_MAX',
-                vchd_adaptive_temporal_tail_mix_max,
+                'MMADA_VCHD_FOCUS_LONGTAIL_MIX_CEILING',
+                vchd_focus_longtail_mix_ceiling,
             )
         )
-        self.vchd_adaptive_temporal_exposure_scale = float(
+        self.vchd_focus_longtail_exposure_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_EXPOSURE_SCALE',
-                vchd_adaptive_temporal_exposure_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_EXPOSURE_TAU',
+                vchd_focus_longtail_exposure_tau,
             )
         )
-        self.vchd_adaptive_temporal_relevance_scale = float(
+        self.vchd_focus_longtail_relevance_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_RELEVANCE_SCALE',
-                vchd_adaptive_temporal_relevance_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_RELEVANCE_TAU',
+                vchd_focus_longtail_relevance_tau,
             )
         )
-        self.vchd_adaptive_temporal_conflict_scale = float(
+        self.vchd_focus_longtail_conflict_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_CONFLICT_SCALE',
-                vchd_adaptive_temporal_conflict_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_CONFLICT_TAU',
+                vchd_focus_longtail_conflict_tau,
+            )
+        )
+        self.vchd_focus_longtail_history_epsilon = float(
+            os.getenv(
+                'MMADA_VCHD_FOCUS_LONGTAIL_HISTORY_EPSILON',
+                vchd_focus_longtail_history_epsilon,
             )
         )
         self.vchd_unified_trajectory_enabled = (
@@ -482,6 +503,12 @@ class MMaDA(BaseModel):
                 vchd_ccaw_pressure_decay,
             )
         )
+        self.vchd_ccaw_pressure_scale = float(
+            os.getenv(
+                'MMADA_VCHD_CCAW_PRESSURE_SCALE',
+                vchd_ccaw_pressure_scale,
+            )
+        )
         self.vchd_ccaw_expand_step = int(
             os.getenv(
                 'MMADA_VCHD_CCAW_EXPAND_STEP',
@@ -493,6 +520,10 @@ class MMaDA(BaseModel):
                 'MMADA_VCHD_CCAW_SHRINK_STEP',
                 vchd_ccaw_shrink_step,
             )
+        )
+        self.vchd_ccaw_pressure_filter = os.getenv(
+            'MMADA_VCHD_CCAW_PRESSURE_FILTER',
+            vchd_ccaw_pressure_filter,
         )
         self.vchd_cache_type = os.getenv(
             'MMADA_VCHD_CACHE_TYPE',
@@ -708,6 +739,10 @@ class MMaDA(BaseModel):
                 ),
                 max_commit_per_iteration=self.vchd_max_commit,
                 fallback_to_raw=self.vchd_fallback_to_raw,
+                fallback_mask_capacity=(
+                    self.vchd_fallback_mask_capacity
+                ),
+                fallback_policy=self.vchd_fallback_policy,
                 force_math_sdpa=(
                     os.getenv('MMADA_VCHD_FORCE_MATH_SDPA', '1') == '1'
                 ),
@@ -732,32 +767,35 @@ class MMaDA(BaseModel):
                 history_anchor_min_consistent=(
                     self.vchd_history_anchor_min_consistent
                 ),
-                ccd_history_enabled=self.vchd_ccd_history_enabled,
-                ccd_history_length=self.vchd_ccd_history_length,
-                ccd_top_v_positions=self.vchd_ccd_top_v_positions,
-                adaptive_temporal_enabled=(
-                    self.vchd_adaptive_temporal_enabled
+                focus_dwell_enabled=self.vchd_focus_dwell_enabled,
+                focus_dwell_depth=self.vchd_focus_dwell_depth,
+                focus_capacity=self.vchd_focus_capacity,
+                focus_longtail_enabled=(
+                    self.vchd_focus_longtail_enabled
                 ),
-                adaptive_temporal_loglogistic_scale=(
-                    self.vchd_adaptive_temporal_loglogistic_scale
+                focus_longtail_kernel_scale=(
+                    self.vchd_focus_longtail_kernel_scale
                 ),
-                adaptive_temporal_loglogistic_shape=(
-                    self.vchd_adaptive_temporal_loglogistic_shape
+                focus_longtail_kernel_shape=(
+                    self.vchd_focus_longtail_kernel_shape
                 ),
-                adaptive_temporal_loglogistic_offset=(
-                    self.vchd_adaptive_temporal_loglogistic_offset
+                focus_longtail_kernel_offset=(
+                    self.vchd_focus_longtail_kernel_offset
                 ),
-                adaptive_temporal_tail_mix_max=(
-                    self.vchd_adaptive_temporal_tail_mix_max
+                focus_longtail_mix_ceiling=(
+                    self.vchd_focus_longtail_mix_ceiling
                 ),
-                adaptive_temporal_exposure_scale=(
-                    self.vchd_adaptive_temporal_exposure_scale
+                focus_longtail_exposure_tau=(
+                    self.vchd_focus_longtail_exposure_tau
                 ),
-                adaptive_temporal_relevance_scale=(
-                    self.vchd_adaptive_temporal_relevance_scale
+                focus_longtail_relevance_tau=(
+                    self.vchd_focus_longtail_relevance_tau
                 ),
-                adaptive_temporal_conflict_scale=(
-                    self.vchd_adaptive_temporal_conflict_scale
+                focus_longtail_conflict_tau=(
+                    self.vchd_focus_longtail_conflict_tau
+                ),
+                focus_longtail_history_epsilon=(
+                    self.vchd_focus_longtail_history_epsilon
                 ),
                 unified_trajectory_enabled=(
                     self.vchd_unified_trajectory_enabled
@@ -840,8 +878,10 @@ class MMaDA(BaseModel):
                 ccaw_qualified_budget=self.vchd_ccaw_qualified_budget,
                 ccaw_max_mask_capacity=self.vchd_ccaw_max_capacity,
                 ccaw_pressure_ema_decay=self.vchd_ccaw_pressure_decay,
+                ccaw_pressure_scale=self.vchd_ccaw_pressure_scale,
                 ccaw_expand_step=self.vchd_ccaw_expand_step,
                 ccaw_shrink_step=self.vchd_ccaw_shrink_step,
+                ccaw_pressure_filter=self.vchd_ccaw_pressure_filter,
             )
             self.vchd_config.validate()
             warnings.warn(
@@ -856,16 +896,16 @@ class MMaDA(BaseModel):
                 f"history_scale={self.vchd_config.history_penalty_scale}, "
                 f"anchor_consistency="
                 f"{self.vchd_config.history_anchor_min_consistent}, "
-                f"ccd_history={self.vchd_config.ccd_history_enabled}, "
-                f"ccd_length={self.vchd_config.ccd_history_length}, "
-                f"ccd_top_v={self.vchd_config.ccd_top_v_positions}, "
-                f"adaptive_temporal="
-                f"{self.vchd_config.adaptive_temporal_enabled}, "
-                f"adaptive_kernel=loglogistic, "
-                f"adaptive_scale="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_scale}, "
-                f"adaptive_shape="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_shape}, "
+                f"focus_dwell={self.vchd_config.focus_dwell_enabled}, "
+                f"focus_dwell_depth={self.vchd_config.focus_dwell_depth}, "
+                f"focus_capacity={self.vchd_config.focus_capacity}, "
+                f"focus_longtail="
+                f"{self.vchd_config.focus_longtail_enabled}, "
+                f"focus_longtail_kernel=loglogistic, "
+                f"focus_longtail_scale="
+                f"{self.vchd_config.focus_longtail_kernel_scale}, "
+                f"focus_longtail_shape="
+                f"{self.vchd_config.focus_longtail_kernel_shape}, "
                 f"unified_trajectory="
                 f"{self.vchd_config.unified_trajectory_enabled}, "
                 f"unified_top_k={self.vchd_config.unified_trajectory_top_k}, "
@@ -1275,38 +1315,41 @@ class MMaDA(BaseModel):
                         "history_anchor_min_consistent": (
                             self.vchd_config.history_anchor_min_consistent
                         ),
-                        "ccd_history_enabled": (
-                            self.vchd_config.ccd_history_enabled
+                        "focus_dwell_enabled": (
+                            self.vchd_config.focus_dwell_enabled
                         ),
-                        "ccd_history_length": (
-                            self.vchd_config.ccd_history_length
+                        "focus_dwell_depth": (
+                            self.vchd_config.focus_dwell_depth
                         ),
-                        "ccd_top_v_positions": (
-                            self.vchd_config.ccd_top_v_positions
+                        "focus_capacity": (
+                            self.vchd_config.focus_capacity
                         ),
-                        "adaptive_temporal_enabled": (
-                            self.vchd_config.adaptive_temporal_enabled
+                        "focus_longtail_enabled": (
+                            self.vchd_config.focus_longtail_enabled
                         ),
-                        "adaptive_temporal_loglogistic_scale": (
-                            self.vchd_config.adaptive_temporal_loglogistic_scale
+                        "focus_longtail_kernel_scale": (
+                            self.vchd_config.focus_longtail_kernel_scale
                         ),
-                        "adaptive_temporal_loglogistic_shape": (
-                            self.vchd_config.adaptive_temporal_loglogistic_shape
+                        "focus_longtail_kernel_shape": (
+                            self.vchd_config.focus_longtail_kernel_shape
                         ),
-                        "adaptive_temporal_loglogistic_offset": (
-                            self.vchd_config.adaptive_temporal_loglogistic_offset
+                        "focus_longtail_kernel_offset": (
+                            self.vchd_config.focus_longtail_kernel_offset
                         ),
-                        "adaptive_temporal_tail_mix_max": (
-                            self.vchd_config.adaptive_temporal_tail_mix_max
+                        "focus_longtail_mix_ceiling": (
+                            self.vchd_config.focus_longtail_mix_ceiling
                         ),
-                        "adaptive_temporal_exposure_scale": (
-                            self.vchd_config.adaptive_temporal_exposure_scale
+                        "focus_longtail_exposure_tau": (
+                            self.vchd_config.focus_longtail_exposure_tau
                         ),
-                        "adaptive_temporal_relevance_scale": (
-                            self.vchd_config.adaptive_temporal_relevance_scale
+                        "focus_longtail_relevance_tau": (
+                            self.vchd_config.focus_longtail_relevance_tau
                         ),
-                        "adaptive_temporal_conflict_scale": (
-                            self.vchd_config.adaptive_temporal_conflict_scale
+                        "focus_longtail_conflict_tau": (
+                            self.vchd_config.focus_longtail_conflict_tau
+                        ),
+                        "focus_longtail_history_epsilon": (
+                            self.vchd_config.focus_longtail_history_epsilon
                         ),
                         "unified_trajectory_enabled": (
                             self.vchd_config.unified_trajectory_enabled

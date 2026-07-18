@@ -10,7 +10,7 @@ and older source snapshots are intentionally kept outside Git.
 .
 ├── MMaDA_DCD_cloud_bundle_20260711/
 │   └── MMaDA/
-│       ├── decoding/                 # VCHD, CCD, long-tail history, CCAW
+│       ├── decoding/                 # VCHD, persistent focus trajectory, CCAW
 │       ├── models/                   # MMaDA model and decode dispatch
 │       ├── evaluation/VLMEvalKit/    # MMaDA evaluation wrapper
 │       ├── tests/                    # deterministic CPU regressions
@@ -57,8 +57,8 @@ From the repository root:
 ```bash
 python VLind-Bench/eval/mmada_eval.py \
   --strategy vchd \
-  --vchd-profile adaptive_temporal \
-  --model-identifier mmada_vchd_loglogistic \
+  --vchd-profile focus_longtail \
+  --model-identifier mmada_vchd_focus_longtail \
   --global-ids "<comma-separated VLind global IDs>" \
   --max-new-tokens 128 \
   --steps 128 \
@@ -76,22 +76,25 @@ Score a completed prediction file with:
 
 ```bash
 python VLind-Bench/eval/score_pipeline.py \
-  --data_path VLind-Bench/outputs/data_mmada_vchd_loglogistic.json \
-  --model_identifier mmada_vchd_loglogistic
+  --data_path VLind-Bench/outputs/data_mmada_vchd_focus_longtail.json \
+  --model_identifier mmada_vchd_focus_longtail
 ```
 
-## Log-logistic trajectory history
+## Persistent focus trajectory (focus-dwell + focus-longtail)
 
-The `adaptive_temporal` profile uses CCD's top-V position intersection and
-full-vocabulary marginalization. Exposure-calibrated visual and trajectory
-conflict mix a shifted discrete Log-logistic survival kernel into CCD's
-three-round rectangular kernel. If activation is zero—or
-`--vchd-adaptive-temporal-tail-mix-max 0`—selection and token behavior are
-exactly CCD.
+The `focus_dwell` profile snapshots the top-V unresolved MASK positions each
+iteration into a bounded ring buffer and only marginalizes over positions
+whose per-position *dwell counter* reaches the configured depth—no explicit
+frame intersection is ever formed. The `focus_longtail` profile keeps the
+same eligibility primitive and adds a shifted discrete Log-logistic survival
+kernel over CD-APC lags, gated by exposure, visual relevance, and
+current-vs-dwell conflict. Setting `--vchd-focus-longtail-mix-ceiling 0`
+(or a fully unreliable visual channel) is token-by-token identical to
+`focus_dwell`.
 
 See
-`MMaDA_DCD_cloud_bundle_20260711/MMaDA/docs/vchd_loglogistic_history.md`
-for formulas and diagnostics.
+`MMaDA_DCD_cloud_bundle_20260711/MMaDA/docs/vchd_focus_longtail.md`
+for formulas, defaults, and diagnostics.
 
 ## CPU regression tests
 

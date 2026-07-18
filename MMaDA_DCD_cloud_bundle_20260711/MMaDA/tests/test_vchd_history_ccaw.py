@@ -6,18 +6,20 @@ import torch
 
 from decoding import (
     CCAWState,
-    CCDHistorySnapshot,
     ContrastStats,
+    FocusFrame,
     UnifiedTrajectoryBatchObservation,
     VCHDDecodeConfig,
     WindowPressure,
     compute_contrast_stats,
+    compute_focus_dwell_counter,
     compute_unified_trajectory_posterior,
     compute_window_pressure,
+    focus_longtail_history_upper_bound,
     history_adjusted_reliability,
     loglogistic_survival_kernel,
-    observe_adaptive_temporal_history,
-    observe_ccd_history,
+    observe_focus_dwell,
+    observe_focus_longtail,
     observe_sparse_history,
     observe_unified_trajectory_batch,
     pressure_adaptive_commit_budget,
@@ -27,6 +29,11 @@ from decoding import (
     update_ccaw_state,
     update_inverse_ccaw_state,
     visual_contrast_decode,
+)
+from decoding.history import (  # P0 helpers used by cache-behaviour tests
+    _build_focus_lookup,
+    _focus_frame_lookup,
+    make_focus_frame,
 )
 from decoding.selector import (
     MAX_WINDOW_TOP1_FALLBACK,
@@ -367,6 +374,72 @@ def test_inverse_window_capacity_is_monotonic_with_pressure():
         update_inverse_ccaw_state(state, _pressure(value), config)
         capacities.append(state.mask_capacity)
     assert capacities == [8, 5, 2]
+
+
+def test_inverse_window_ema_filter_smooths_response():
+    """filter=ema should react more gradually than filter=none."""
+
+    config_none = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_filter="none",
+        ccaw_pressure_ema_decay=0.8,
+    )
+    config_ema = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_filter="ema",
+        ccaw_pressure_ema_decay=0.8,
+    )
+    state_none = CCAWState(mask_capacity=8)
+    state_ema = CCAWState(mask_capacity=8)
+    update_inverse_ccaw_state(state_none, _pressure(1.0), config_none)
+    update_inverse_ccaw_state(state_ema, _pressure(1.0), config_ema)
+    # Raw filter contracts instantly to the minimum; EMA lags behind
+    # because pressure_ema has only absorbed 0.2 of the spike.
+    assert state_none.mask_capacity == 2
+    assert state_ema.mask_capacity > state_none.mask_capacity
+
+
+def test_pressure_scale_amplifies_shrinking():
+    """pressure_scale > 1.0 saturates target at a lower raw pressure."""
+
+    config_low = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_scale=1.0,
+    )
+    config_high = VCHDDecodeConfig(
+        mask_capacity=2,
+        max_physical_span=8,
+        max_commit_per_iteration=2,
+        ccaw_mode="inverse_window",
+        ccaw_max_mask_capacity=8,
+        ccaw_expand_step=8,
+        ccaw_shrink_step=8,
+        ccaw_pressure_scale=3.0,
+    )
+    state_low = CCAWState(mask_capacity=8)
+    state_high = CCAWState(mask_capacity=8)
+    update_inverse_ccaw_state(state_low, _pressure(0.3), config_low)
+    update_inverse_ccaw_state(state_high, _pressure(0.3), config_high)
+    # 3.0 * 0.3 = 0.9 clamps close to full shrink; 1.0 * 0.3 = 0.3 shrinks less.
+    assert state_high.mask_capacity < state_low.mask_capacity
 
 
 class _Output:
@@ -928,7 +1001,7 @@ def test_unified_trajectory_decoder_terminates_without_readiness_fallback():
     assert report["context_versions"] == report["model_evaluations"]
 
 
-def test_adaptive_temporal_loglogistic_kernel_has_sharp_long_tail():
+def test_focus_longtail_loglogistic_kernel_has_sharp_long_tail():
     weights = loglogistic_survival_kernel(
         torch.arange(8),
         scale=3.20,
@@ -942,15 +1015,54 @@ def test_adaptive_temporal_loglogistic_kernel_has_sharp_long_tail():
     assert float(weights[-1]) > 0.0
 
 
-def test_adaptive_temporal_zero_activation_is_exactly_ccd():
-    history = [
-        CCDHistorySnapshot(
+def test_focus_dwell_counter_reflects_contiguous_dwell():
+    frames = [
+        FocusFrame(
             positions=torch.tensor([0, 1, 2]),
             distributions=torch.tensor(
                 [[0.8, 0.2], [0.2, 0.8], [0.5, 0.5]]
             ),
         ),
-        CCDHistorySnapshot(
+        FocusFrame(
+            positions=torch.tensor([1, 0]),
+            distributions=torch.tensor([[0.3, 0.7], [0.6, 0.4]]),
+        ),
+    ]
+    current_positions = torch.tensor([0, 1])
+    counter = compute_focus_dwell_counter(
+        frames, current_positions, total_positions=3
+    )
+    assert counter.tolist() == [3, 3, 0]
+    empty_counter = compute_focus_dwell_counter(
+        [], current_positions, total_positions=3
+    )
+    assert empty_counter.tolist() == [1, 1, 0]
+
+    broken_frames = [
+        FocusFrame(
+            positions=torch.tensor([0]),
+            distributions=torch.tensor([[0.9, 0.1]]),
+        ),
+        FocusFrame(
+            positions=torch.tensor([1]),
+            distributions=torch.tensor([[0.4, 0.6]]),
+        ),
+    ]
+    broken_counter = compute_focus_dwell_counter(
+        broken_frames, current_positions, total_positions=3
+    )
+    assert broken_counter.tolist() == [1, 2, 0]
+
+
+def test_focus_longtail_zero_activation_matches_focus_dwell():
+    frames = [
+        FocusFrame(
+            positions=torch.tensor([0, 1, 2]),
+            distributions=torch.tensor(
+                [[0.8, 0.2], [0.2, 0.8], [0.5, 0.5]]
+            ),
+        ),
+        FocusFrame(
             positions=torch.tensor([1, 0]),
             distributions=torch.tensor([[0.3, 0.7], [0.6, 0.4]]),
         ),
@@ -964,18 +1076,18 @@ def test_adaptive_temporal_zero_activation_is_exactly_ccd():
     confidence = torch.tensor([0.9, 0.8, 0.1])
     apc_mass = torch.ones(3)
     mask = torch.ones(3, dtype=torch.bool)
-    ccd = observe_ccd_history(
-        history,
+    dwell = observe_focus_dwell(
+        frames,
         current,
         visual,
         confidence,
         apc_mass,
         mask,
-        history_length=2,
-        top_v_positions=2,
+        dwell_depth=2,
+        focus_capacity=2,
     )
-    adaptive = observe_adaptive_temporal_history(
-        history,
+    longtail = observe_focus_longtail(
+        frames,
         current,
         visual,
         confidence,
@@ -983,43 +1095,43 @@ def test_adaptive_temporal_zero_activation_is_exactly_ccd():
         mask,
         torch.zeros(3),
         torch.ones(3),
-        stability_length=2,
-        top_v_positions=2,
-        loglogistic_scale=3.20,
-        loglogistic_shape=8.0,
-        loglogistic_offset=1.0,
-        tail_mix_max=1.0,
-        exposure_scale=0.10,
-        relevance_scale=0.01,
-        conflict_scale=0.002,
+        dwell_depth=2,
+        focus_capacity=2,
+        kernel_scale=3.20,
+        kernel_shape=8.0,
+        kernel_offset=1.0,
+        mix_ceiling=1.0,
+        exposure_tau=0.10,
+        relevance_tau=0.01,
+        conflict_tau=0.002,
     )
-    eligible = ccd.eligible_mask
+    eligible = dwell.eligible_mask
 
-    assert torch.equal(adaptive.eligible_mask, eligible)
-    assert torch.equal(adaptive.selected_token, ccd.marginal_token)
+    assert torch.equal(longtail.eligible_mask, eligible)
+    assert torch.equal(longtail.selected_token, dwell.marginal_token)
     assert torch.allclose(
-        adaptive.base_confidence, ccd.base_confidence, atol=1e-7
+        longtail.base_confidence, dwell.base_confidence, atol=1e-7
     )
     assert torch.allclose(
-        adaptive.contrast_confidence,
-        ccd.contrast_confidence,
+        longtail.contrast_confidence,
+        dwell.contrast_confidence,
         atol=1e-7,
     )
     assert torch.allclose(
-        adaptive.entropy[eligible],
-        ccd.marginal_entropy[eligible],
+        longtail.entropy[eligible],
+        dwell.marginal_entropy[eligible],
         atol=1e-7,
     )
-    assert bool((adaptive.tail_activation[eligible] == 0.0).all())
-    assert bool((adaptive.long_tail_mass[eligible] == 0.0).all())
+    assert bool((longtail.tail_activation[eligible] == 0.0).all())
+    assert bool((longtail.long_tail_mass[eligible] == 0.0).all())
     assert torch.allclose(
-        adaptive.current_weight[eligible],
+        longtail.current_weight[eligible],
         torch.full((2,), 1.0 / 3.0),
         atol=1e-7,
     )
 
 
-def test_adaptive_temporal_zero_mix_matches_ccd_decoder_behavior():
+def test_focus_longtail_zero_mix_matches_focus_dwell_decoder_behavior():
     mask_id = 4
     tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
     common = dict(
@@ -1035,18 +1147,18 @@ def test_adaptive_temporal_zero_mix_matches_ccd_decoder_behavior():
         truncate_at_eos=False,
         collect_trace=True,
         return_report=True,
-        ccd_history_length=2,
-        ccd_top_v_positions=3,
+        focus_dwell_depth=2,
+        focus_capacity=3,
     )
-    ccd_output, ccd_report = visual_contrast_decode(
+    dwell_output, dwell_report = visual_contrast_decode(
         _FixedModel(),
         tokens,
         decode_start=3,
         decode_end=6,
         image_span=(1, 2),
-        config=VCHDDecodeConfig(**common, ccd_history_enabled=True),
+        config=VCHDDecodeConfig(**common, focus_dwell_enabled=True),
     )
-    adaptive_output, adaptive_report = visual_contrast_decode(
+    longtail_output, longtail_report = visual_contrast_decode(
         _FixedModel(),
         tokens,
         decode_start=3,
@@ -1054,42 +1166,42 @@ def test_adaptive_temporal_zero_mix_matches_ccd_decoder_behavior():
         image_span=(1, 2),
         config=VCHDDecodeConfig(
             **common,
-            adaptive_temporal_enabled=True,
-            adaptive_temporal_tail_mix_max=0.0,
+            focus_longtail_enabled=True,
+            focus_longtail_mix_ceiling=0.0,
         ),
     )
 
-    assert torch.equal(adaptive_output, ccd_output)
-    ccd_decisions = [
+    assert torch.equal(longtail_output, dwell_output)
+    dwell_decisions = [
         (
             item["selected_positions"],
             item["selected_tokens"],
             item["commit_reason"],
         )
-        for item in ccd_report["trace"]
+        for item in dwell_report["trace"]
     ]
-    adaptive_decisions = [
+    longtail_decisions = [
         (
             item["selected_positions"],
             item["selected_tokens"],
             item["commit_reason"],
         )
-        for item in adaptive_report["trace"]
+        for item in longtail_report["trace"]
     ]
-    assert adaptive_decisions == ccd_decisions
+    assert longtail_decisions == dwell_decisions
 
 
-def test_adaptive_temporal_activation_adds_nonzero_old_history_tail():
+def test_focus_longtail_activation_adds_nonzero_old_dwell_tail():
     recent = torch.tensor([[0.2, 0.8]])
     old = torch.tensor([[1.0, 0.0]])
-    history = [
-        CCDHistorySnapshot(torch.tensor([0]), old),
-        CCDHistorySnapshot(torch.tensor([0]), old),
-        CCDHistorySnapshot(torch.tensor([0]), recent),
-        CCDHistorySnapshot(torch.tensor([0]), recent),
+    frames = [
+        FocusFrame(torch.tensor([0]), old),
+        FocusFrame(torch.tensor([0]), old),
+        FocusFrame(torch.tensor([0]), recent),
+        FocusFrame(torch.tensor([0]), recent),
     ]
     kwargs = dict(
-        history=history,
+        focus_frames=frames,
         contrast_distribution=torch.tensor([[0.0, 1.0]]),
         visual_distribution=torch.tensor([[0.4, 0.6]]),
         position_confidence=torch.ones(1),
@@ -1097,49 +1209,49 @@ def test_adaptive_temporal_activation_adds_nonzero_old_history_tail():
         mask=torch.ones(1, dtype=torch.bool),
         exposure=torch.full((1,), 10.0),
         visual_relevance=torch.full((1,), 10.0),
-        stability_length=2,
-        top_v_positions=1,
-        loglogistic_scale=3.20,
-        loglogistic_shape=8.0,
-        loglogistic_offset=1.0,
-        exposure_scale=0.10,
-        relevance_scale=0.01,
-        conflict_scale=0.002,
+        dwell_depth=2,
+        focus_capacity=1,
+        kernel_scale=3.20,
+        kernel_shape=8.0,
+        kernel_offset=1.0,
+        exposure_tau=0.10,
+        relevance_tau=0.01,
+        conflict_tau=0.002,
     )
-    ccd_equivalent = observe_adaptive_temporal_history(
-        **kwargs, tail_mix_max=0.0
+    dwell_equivalent = observe_focus_longtail(
+        **kwargs, mix_ceiling=0.0
     )
-    long_tail = observe_adaptive_temporal_history(
-        **kwargs, tail_mix_max=1.0
+    long_tail = observe_focus_longtail(
+        **kwargs, mix_ceiling=1.0
     )
 
     assert float(long_tail.tail_activation[0]) > 0.99
     assert float(long_tail.long_tail_mass[0]) > 0.05
-    assert long_tail.effective_history_depth[0].item() == 5
+    assert long_tail.effective_dwell_depth[0].item() == 5
     assert long_tail.selected_token[0].item() == 1
     assert (
         float(long_tail.contrast_confidence[0])
-        < float(ccd_equivalent.contrast_confidence[0])
+        < float(dwell_equivalent.contrast_confidence[0])
     )
 
 
-def test_adaptive_temporal_isolation_rejects_score_fusion():
+def test_focus_longtail_isolation_rejects_score_fusion():
     config = VCHDDecodeConfig(
         mask_id=4,
-        adaptive_temporal_enabled=True,
+        focus_longtail_enabled=True,
         unified_trajectory_enabled=True,
     )
     try:
         config.validate()
     except ValueError as error:
-        assert "adaptive temporal posterior is isolated" in str(error)
+        assert "focus long-tail posterior is isolated" in str(error)
     else:
         raise AssertionError(
-            "Adaptive temporal posterior must reject unified score fusion"
+            "Focus long-tail posterior must reject unified score fusion"
         )
 
 
-def test_adaptive_temporal_decoder_reports_long_tail_diagnostics():
+def test_focus_longtail_decoder_reports_long_tail_diagnostics():
     mask_id = 4
     tokens = torch.tensor([[0, 2, 3, mask_id, mask_id, mask_id]])
     config = VCHDDecodeConfig(
@@ -1155,8 +1267,8 @@ def test_adaptive_temporal_decoder_reports_long_tail_diagnostics():
         truncate_at_eos=False,
         collect_trace=True,
         return_report=True,
-        adaptive_temporal_enabled=True,
-        ccd_top_v_positions=3,
+        focus_longtail_enabled=True,
+        focus_capacity=3,
     )
     output, report = visual_contrast_decode(
         _FixedModel(),
@@ -1168,17 +1280,305 @@ def test_adaptive_temporal_decoder_reports_long_tail_diagnostics():
     )
 
     assert output[0, 3:].tolist() == [1, 1, 1]
-    assert report["adaptive_temporal_enabled"]
-    assert report["adaptive_temporal_full_distribution"]
-    assert not report["adaptive_temporal_token_visual_residual"]
-    assert report["adaptive_temporal_ccd_identity_at_zero_activation"]
+    assert report["focus_longtail_enabled"]
+    assert report["focus_longtail_full_distribution"]
+    assert not report["focus_longtail_token_visual_residual"]
+    assert report["focus_longtail_dwell_identity_at_zero_activation"]
     assert (
-        report["adaptive_temporal_kernel"]
+        report["focus_longtail_kernel_type"]
         == "shifted_loglogistic_survival"
     )
-    assert report["adaptive_temporal_eligible_positions"] > 0
+    assert report["focus_longtail_eligible_positions"] > 0
     assert (
-        report["adaptive_temporal_mean_effective_history_depth"] >= 1.0
+        report["focus_longtail_mean_effective_dwell_depth"] >= 1.0
     )
-    assert report["adaptive_temporal_empty_intersection_fallbacks"] == 0
+    assert report["focus_longtail_empty_dwell_fallbacks"] == 0
     assert report["context_versions"] == report["model_evaluations"]
+
+
+def test_focus_longtail_history_upper_bound_matches_survival_epsilon():
+    upper = focus_longtail_history_upper_bound(
+        kernel_scale=3.2,
+        kernel_shape=8.0,
+        kernel_offset=1.0,
+        epsilon=1.0e-4,
+        dwell_depth=2,
+    )
+    assert upper >= 2
+    kept = loglogistic_survival_kernel(
+        torch.tensor([float(upper)]),
+        scale=3.2,
+        shape=8.0,
+        offset=1.0,
+    )
+    beyond = loglogistic_survival_kernel(
+        torch.tensor([float(upper + 4)]),
+        scale=3.2,
+        shape=8.0,
+        offset=1.0,
+    )
+    assert float(kept.item()) >= 1.0e-4 / 4.0
+    assert float(beyond.item()) < 1.0e-4
+    assert (
+        focus_longtail_history_upper_bound(
+            kernel_scale=3.2,
+            kernel_shape=8.0,
+            kernel_offset=1.0,
+            epsilon=1.0e-4,
+            dwell_depth=64,
+        )
+        == 64
+    )
+
+
+def test_focus_longtail_config_rejects_nonint_depth_and_capacity():
+    for bad in (float("inf"), float("nan"), 2.9, 0.5):
+        try:
+            VCHDDecodeConfig(
+                mask_id=1,
+                focus_dwell_enabled=True,
+                focus_dwell_depth=bad,
+            ).validate()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"validate() must reject focus_dwell_depth={bad}"
+            )
+        try:
+            VCHDDecodeConfig(
+                mask_id=1,
+                focus_dwell_enabled=True,
+                focus_capacity=bad,
+            ).validate()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"validate() must reject focus_capacity={bad}"
+            )
+
+
+def test_focus_longtail_decoder_prunes_frames_below_survival_epsilon():
+    mask_id = 4
+    tokens = torch.tensor(
+        [[0, 2, 3] + [mask_id] * 12]
+    )
+    config = VCHDDecodeConfig(
+        mask_id=mask_id,
+        text_vocab_size=5,
+        forbidden_token_ids=(0, 3, mask_id),
+        tau_base=0.5,
+        tau_contrast=0.5,
+        mask_capacity=12,
+        max_physical_span=12,
+        max_commit_per_iteration=1,
+        force_math_sdpa=False,
+        truncate_at_eos=False,
+        collect_trace=False,
+        return_report=True,
+        focus_longtail_enabled=True,
+        focus_capacity=6,
+        focus_dwell_depth=2,
+        focus_longtail_history_epsilon=1.0e-3,
+    )
+    max_history = focus_longtail_history_upper_bound(
+        kernel_scale=config.focus_longtail_kernel_scale,
+        kernel_shape=config.focus_longtail_kernel_shape,
+        kernel_offset=config.focus_longtail_kernel_offset,
+        epsilon=config.focus_longtail_history_epsilon,
+        dwell_depth=config.focus_dwell_depth,
+    )
+    _, report = visual_contrast_decode(
+        _FixedModel(),
+        tokens,
+        decode_start=3,
+        decode_end=15,
+        image_span=(1, 2),
+        config=config,
+    )
+    assert report["focus_longtail_enabled"]
+    assert report["focus_longtail_scored_positions"] > max_history
+    assert report["focus_longtail_eligible_positions"] > 0
+
+
+def test_focus_longtail_zero_mix_is_bit_exact_focus_dwell():
+    torch.manual_seed(0)
+    positions = 5
+    vocab = 7
+    contrast = torch.rand(positions, vocab)
+    contrast = contrast / contrast.sum(-1, keepdim=True)
+    visual = torch.rand(positions, vocab)
+    visual = visual / visual.sum(-1, keepdim=True)
+    confidence = torch.tensor([0.9, 0.85, 0.8, 0.75, 0.1])
+    apc_mass = torch.ones(positions)
+    mask = torch.ones(positions, dtype=torch.bool)
+    frames = [
+        FocusFrame(
+            positions=torch.tensor([0, 1, 2, 3]),
+            distributions=(
+                torch.rand(4, vocab)
+                / torch.rand(4, vocab).sum(-1, keepdim=True)
+            ),
+        ),
+        FocusFrame(
+            positions=torch.tensor([1, 0, 2, 3]),
+            distributions=(
+                torch.rand(4, vocab)
+                / torch.rand(4, vocab).sum(-1, keepdim=True)
+            ),
+        ),
+    ]
+    dwell = observe_focus_dwell(
+        frames,
+        contrast,
+        visual,
+        confidence,
+        apc_mass,
+        mask,
+        dwell_depth=2,
+        focus_capacity=4,
+    )
+    longtail = observe_focus_longtail(
+        frames,
+        contrast,
+        visual,
+        confidence,
+        apc_mass,
+        mask,
+        torch.zeros(positions),
+        torch.ones(positions),
+        dwell_depth=2,
+        focus_capacity=4,
+        kernel_scale=3.2,
+        kernel_shape=8.0,
+        kernel_offset=1.0,
+        mix_ceiling=0.0,
+        exposure_tau=0.1,
+        relevance_tau=0.01,
+        conflict_tau=0.002,
+    )
+    assert torch.equal(dwell.eligible_mask, longtail.eligible_mask)
+    assert torch.equal(dwell.marginal_token, longtail.selected_token)
+    assert torch.equal(dwell.base_confidence, longtail.base_confidence)
+    assert torch.equal(
+        dwell.contrast_confidence, longtail.contrast_confidence
+    )
+    eligible = dwell.eligible_mask
+    assert torch.equal(
+        dwell.marginal_entropy[eligible], longtail.entropy[eligible]
+    )
+
+
+def test_make_focus_frame_precomputes_correct_inverse_lookup():
+    positions = torch.tensor([2, 5, 7], dtype=torch.long)
+    distributions = torch.rand(3, 6)
+    frame = make_focus_frame(positions, distributions, total_positions=8)
+    expected = torch.full((8,), -1, dtype=torch.long)
+    expected[positions] = torch.arange(positions.numel(), dtype=torch.long)
+    assert frame.lookup is not None
+    assert torch.equal(frame.lookup, expected)
+    # Composition invariant: frame.positions[lookup[i]] == i for present i,
+    # so the inverse mapping is exact and independent of ordering.
+    present = frame.lookup >= 0
+    present_indices = torch.nonzero(present, as_tuple=True)[0]
+    assert torch.equal(frame.positions[frame.lookup[present]], present_indices)
+
+
+def test_build_focus_lookup_rejects_multi_dim_positions():
+    positions = torch.zeros((2, 2), dtype=torch.long)
+    try:
+        _build_focus_lookup(positions, total_positions=8)
+    except ValueError as exc:
+        assert "one-dimensional" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on multi-dim positions")
+
+
+def test_focus_frame_lookup_fallback_matches_cached_path():
+    """A raw ``FocusFrame`` without a cached lookup must produce the same
+    observation as an equivalent frame built via ``make_focus_frame``. This
+    locks the ``_focus_frame_lookup`` fallback to be strictly equivalent to
+    the primary cache-hit path.
+    """
+
+    torch.manual_seed(1234)
+    positions_count = 5
+    vocab = 7
+    contrast = torch.rand(positions_count, vocab)
+    contrast = contrast / contrast.sum(-1, keepdim=True)
+    visual = torch.rand(positions_count, vocab)
+    visual = visual / visual.sum(-1, keepdim=True)
+    confidence = torch.tensor([0.9, 0.85, 0.8, 0.75, 0.1])
+    apc_mass = torch.ones(positions_count)
+    mask = torch.ones(positions_count, dtype=torch.bool)
+
+    focus_positions_a = torch.tensor([0, 1, 2, 3])
+    focus_positions_b = torch.tensor([1, 0, 2, 3])
+    dist_a = torch.rand(4, vocab)
+    dist_a = dist_a / dist_a.sum(-1, keepdim=True)
+    dist_b = torch.rand(4, vocab)
+    dist_b = dist_b / dist_b.sum(-1, keepdim=True)
+
+    raw_frames = [
+        FocusFrame(positions=focus_positions_a, distributions=dist_a),
+        FocusFrame(positions=focus_positions_b, distributions=dist_b),
+    ]
+    cached_frames = [
+        make_focus_frame(focus_positions_a, dist_a, positions_count),
+        make_focus_frame(focus_positions_b, dist_b, positions_count),
+    ]
+    assert raw_frames[0].lookup is None
+    assert cached_frames[0].lookup is not None
+
+    kwargs = dict(
+        contrast_distribution=contrast,
+        visual_distribution=visual,
+        position_confidence=confidence,
+        apc_mass=apc_mass,
+        mask=mask,
+        exposure=torch.full((positions_count,), 0.5),
+        visual_relevance=torch.full((positions_count,), 0.5),
+        dwell_depth=2,
+        focus_capacity=4,
+        kernel_scale=3.2,
+        kernel_shape=8.0,
+        kernel_offset=1.0,
+        mix_ceiling=0.5,
+        exposure_tau=0.4,
+        relevance_tau=0.2,
+        conflict_tau=0.1,
+    )
+    raw_obs = observe_focus_longtail(raw_frames, **kwargs)
+    cached_obs = observe_focus_longtail(cached_frames, **kwargs)
+
+    assert torch.equal(raw_obs.eligible_mask, cached_obs.eligible_mask)
+    assert torch.equal(raw_obs.selected_token, cached_obs.selected_token)
+    assert torch.equal(raw_obs.base_confidence, cached_obs.base_confidence)
+    assert torch.equal(
+        raw_obs.contrast_confidence, cached_obs.contrast_confidence
+    )
+    eligible = raw_obs.eligible_mask
+    assert torch.equal(raw_obs.entropy[eligible], cached_obs.entropy[eligible])
+    assert torch.equal(raw_obs.margin[eligible], cached_obs.margin[eligible])
+    assert torch.equal(
+        raw_obs.long_tail_mass[eligible], cached_obs.long_tail_mass[eligible]
+    )
+
+
+def test_focus_frame_lookup_rejects_mismatched_position_count():
+    """A cached lookup whose length no longer matches ``position_count``
+    must be rejected loudly rather than silently returning garbage indices.
+    """
+
+    positions = torch.tensor([0, 2], dtype=torch.long)
+    distributions = torch.rand(2, 4)
+    frame = make_focus_frame(positions, distributions, total_positions=8)
+    try:
+        _focus_frame_lookup(frame, total_positions=4, device=torch.device("cpu"))
+    except ValueError as exc:
+        assert "lookup" in str(exc).lower()
+    else:
+        raise AssertionError(
+            "expected ValueError when total_positions disagrees with cache"
+        )

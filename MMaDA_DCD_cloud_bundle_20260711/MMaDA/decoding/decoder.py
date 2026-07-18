@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -12,33 +13,34 @@ from .config import (
 )
 from .contrast import compute_contrast_stats
 from .history import (
-    AdaptiveTemporalObservation,
-    CCDHistoryObservation,
-    CCDHistorySnapshot,
     CounterfactualEvidenceHistory,
+    FocusDwellObservation,
+    FocusFrame,
+    FocusLongTailObservation,
     SparseHistory,
     UnifiedCandidateTrajectory,
     UnifiedTrajectoryBatchObservation,
     UnifiedTrajectoryPosterior,
     compute_unified_trajectory_posterior,
     counterfactual_exposure_weights,
+    focus_longtail_history_upper_bound,
     history_adjusted_reliability,
-    observe_adaptive_temporal_history,
-    observe_ccd_history,
     observe_counterfactual_evidence_batch,
+    observe_focus_dwell,
+    observe_focus_longtail,
     observe_sparse_history,
     observe_unified_trajectory_batch,
 )
 from .mmada_adapter import MMaDAVisualAccessAdapter
 from .selector import (
-    CCD_EMPTY_INTERSECTION_FALLBACK,
+    FOCUS_DWELL_EMPTY_FALLBACK,
     MAX_WINDOW_TOP1_FALLBACK,
     THRESHOLD_COMMIT,
     build_fixed_window,
-    select_ccd_history_positions,
     select_ccaw_positions,
     select_counterfactual_exposure_positions,
     select_fixed_window_positions,
+    select_focus_dwell_positions,
     select_unified_trajectory_positions,
 )
 from .vocabulary import build_valid_text_vocab
@@ -131,12 +133,23 @@ def visual_contrast_decode(
     response_length = decode_end - decode_start
     context_version = 0
     history: Dict[int, SparseHistory] = {}
-    ccd_history: List[CCDHistorySnapshot] = []
+    focus_dwell_frames: List[FocusFrame] = []
     counterfactual_history: Dict[int, CounterfactualEvidenceHistory] = {}
     unified_trajectory_history: Dict[
         int, Dict[int, UnifiedCandidateTrajectory]
     ] = {}
-    adaptive_temporal_history: List[CCDHistorySnapshot] = []
+    focus_longtail_frames: List[FocusFrame] = []
+    focus_longtail_history_depth = (
+        focus_longtail_history_upper_bound(
+            kernel_scale=config.focus_longtail_kernel_scale,
+            kernel_shape=config.focus_longtail_kernel_shape,
+            kernel_offset=config.focus_longtail_kernel_offset,
+            epsilon=config.focus_longtail_history_epsilon,
+            dwell_depth=config.focus_dwell_depth,
+        )
+        if config.focus_longtail_enabled
+        else int(config.focus_dwell_depth)
+    )
     previous_counterfactual_commit_positions = torch.empty(
         0, dtype=torch.long, device=state.device
     )
@@ -149,21 +162,21 @@ def visual_contrast_decode(
     previous_unified_commit_relevance = torch.empty(
         0, dtype=torch.float32, device=state.device
     )
-    previous_adaptive_commit_positions = torch.empty(
+    previous_focus_longtail_commit_positions = torch.empty(
         0, dtype=torch.long, device=state.device
     )
-    previous_adaptive_commit_relevance = torch.empty(
+    previous_focus_longtail_commit_relevance = torch.empty(
         0, dtype=torch.float32, device=state.device
     )
     history_observations = 0
     history_stability_sum = 0.0
     history_anchor_forced_deferrals = 0
-    ccd_eligible_positions = 0
-    ccd_history_observations = 0
-    ccd_empty_intersection_fallbacks = 0
-    ccd_marginal_token_changes = 0
-    ccd_selected_marginal_token_changes = 0
-    ccd_marginal_entropy_sum = 0.0
+    focus_dwell_eligible_positions_sum = 0
+    focus_dwell_observations = 0
+    focus_dwell_empty_fallbacks = 0
+    focus_dwell_marginal_token_changes = 0
+    focus_dwell_selected_marginal_token_changes = 0
+    focus_dwell_marginal_entropy_sum = 0.0
     counterfactual_scored_positions = 0
     counterfactual_observations = 0
     counterfactual_support_positions = 0
@@ -189,19 +202,19 @@ def visual_contrast_decode(
     unified_opposed_candidates = 0
     unified_selected_opposed = 0
     unified_semantic_only_commits = 0
-    adaptive_scored_positions = 0
-    adaptive_eligible_positions = 0
-    adaptive_tail_active_positions = 0
-    adaptive_token_replacements = 0
-    adaptive_committed_token_replacements = 0
-    adaptive_empty_intersection_fallbacks = 0
-    adaptive_tail_activation_sum = 0.0
-    adaptive_exposure_sum = 0.0
-    adaptive_relevance_precision_sum = 0.0
-    adaptive_conflict_sum = 0.0
-    adaptive_long_tail_mass_sum = 0.0
-    adaptive_current_weight_sum = 0.0
-    adaptive_effective_history_depth_sum = 0.0
+    focus_longtail_scored_positions = 0
+    focus_longtail_eligible_positions = 0
+    focus_longtail_tail_active_positions = 0
+    focus_longtail_token_replacements = 0
+    focus_longtail_committed_token_replacements = 0
+    focus_longtail_empty_dwell_fallbacks = 0
+    focus_longtail_tail_activation_sum = 0.0
+    focus_longtail_exposure_sum = 0.0
+    focus_longtail_relevance_precision_sum = 0.0
+    focus_longtail_conflict_sum = 0.0
+    focus_longtail_long_tail_mass_sum = 0.0
+    focus_longtail_current_weight_sum = 0.0
+    focus_longtail_effective_dwell_depth_sum = 0.0
     initial_ccaw_capacity = (
         int(config.ccaw_block_size)
         if config.ccaw_enabled and config.ccaw_mode == "hard_block"
@@ -229,6 +242,12 @@ def visual_contrast_decode(
     ccaw_candidate_conflict_sum = 0.0
     ccaw_history_instability_sum = 0.0
     ccaw_qualification_deficit_sum = 0.0
+    ccaw_pressure_sum_qualified = 0.0
+    ccaw_pressure_sum_fallback = 0.0
+    ccaw_qualification_deficit_sum_qualified = 0.0
+    ccaw_qualification_deficit_sum_fallback = 0.0
+    ccaw_qualified_commit_count = 0
+    ccaw_fallback_commit_count = 0
     ccaw_commit_budget_sum = 0
     ccaw_commit_budget_count = 0
     ccaw_min_commit_budget = int(config.max_commit_per_iteration)
@@ -287,8 +306,8 @@ def visual_contrast_decode(
                 else None
             ),
             return_dense_probs=(
-                config.ccd_history_enabled
-                or config.adaptive_temporal_enabled
+                config.focus_dwell_enabled
+                or config.focus_longtail_enabled
             ),
             trajectory_top_k=(
                 config.unified_trajectory_top_k
@@ -354,41 +373,43 @@ def visual_contrast_decode(
                 contrast_reliability[history_anchor_position] = 0.0
                 history_anchor_forced = True
 
-        adaptive_observation: Optional[AdaptiveTemporalObservation] = None
-        adaptive_token_overrides = stats.contrast_token.clone()
-        adaptive_confidence = stats.contrast_confidence.clone()
-        adaptive_base_confidence = stats.base_confidence.clone()
-        adaptive_entropy = torch.full_like(
+        focus_longtail_observation: Optional[FocusLongTailObservation] = None
+        focus_longtail_token_overrides = stats.contrast_token.clone()
+        focus_longtail_confidence = stats.contrast_confidence.clone()
+        focus_longtail_base_confidence = stats.base_confidence.clone()
+        focus_longtail_entropy = torch.full_like(
             stats.contrast_confidence, torch.inf
         )
-        adaptive_margin = torch.zeros_like(stats.contrast_confidence)
-        adaptive_tail_activation = torch.zeros_like(
+        focus_longtail_margin = torch.zeros_like(stats.contrast_confidence)
+        focus_longtail_tail_activation = torch.zeros_like(
             stats.contrast_confidence
         )
-        adaptive_exposure = torch.zeros_like(stats.contrast_confidence)
-        adaptive_relevance_precision = torch.zeros_like(
+        focus_longtail_exposure = torch.zeros_like(stats.contrast_confidence)
+        focus_longtail_relevance_precision = torch.zeros_like(
             stats.contrast_confidence
         )
-        adaptive_conflict = torch.zeros_like(stats.contrast_confidence)
-        adaptive_long_tail_mass = torch.zeros_like(
+        focus_longtail_conflict = torch.zeros_like(stats.contrast_confidence)
+        focus_longtail_long_tail_mass = torch.zeros_like(
             stats.contrast_confidence
         )
-        adaptive_current_weight = torch.ones_like(stats.contrast_confidence)
-        adaptive_effective_history_depth = torch.ones_like(
+        focus_longtail_current_weight = torch.ones_like(
+            stats.contrast_confidence
+        )
+        focus_longtail_effective_dwell_depth = torch.ones_like(
             stats.contrast_token, dtype=torch.long
         )
-        adaptive_eligible_mask = torch.zeros_like(mask)
-        if config.adaptive_temporal_enabled:
+        focus_longtail_eligible_mask = torch.zeros_like(mask)
+        if config.focus_longtail_enabled:
             if stats.contrast_probs is None or stats.visual_probs is None:
                 raise RuntimeError(
-                    "Adaptive temporal decoding requires full visual and "
+                    "Focus long-tail decoding requires full visual and "
                     "CD-APC distributions"
                 )
             all_masked_positions = torch.nonzero(mask, as_tuple=True)[0]
             masked_exposure = counterfactual_exposure_weights(
                 all_masked_positions,
-                previous_adaptive_commit_positions,
-                previous_adaptive_commit_relevance,
+                previous_focus_longtail_commit_positions,
+                previous_focus_longtail_commit_relevance,
                 distance_scale=(
                     config.counterfactual_exposure_distance_scale
                 ),
@@ -398,8 +419,8 @@ def visual_contrast_decode(
             )
             full_exposure = torch.zeros_like(stats.contrast_confidence)
             full_exposure[all_masked_positions] = masked_exposure
-            adaptive_observation = observe_adaptive_temporal_history(
-                adaptive_temporal_history,
+            focus_longtail_observation = observe_focus_longtail(
+                focus_longtail_frames,
                 stats.contrast_probs,
                 stats.visual_probs,
                 stats.contrast_confidence,
@@ -407,48 +428,54 @@ def visual_contrast_decode(
                 mask,
                 full_exposure,
                 stats.visual_relevance,
-                stability_length=config.ccd_history_length,
-                top_v_positions=config.ccd_top_v_positions,
-                loglogistic_scale=(
-                    config.adaptive_temporal_loglogistic_scale
-                ),
-                loglogistic_shape=(
-                    config.adaptive_temporal_loglogistic_shape
-                ),
-                loglogistic_offset=(
-                    config.adaptive_temporal_loglogistic_offset
-                ),
-                tail_mix_max=config.adaptive_temporal_tail_mix_max,
-                exposure_scale=config.adaptive_temporal_exposure_scale,
-                relevance_scale=config.adaptive_temporal_relevance_scale,
-                conflict_scale=config.adaptive_temporal_conflict_scale,
+                dwell_depth=config.focus_dwell_depth,
+                focus_capacity=config.focus_capacity,
+                kernel_scale=config.focus_longtail_kernel_scale,
+                kernel_shape=config.focus_longtail_kernel_shape,
+                kernel_offset=config.focus_longtail_kernel_offset,
+                mix_ceiling=config.focus_longtail_mix_ceiling,
+                exposure_tau=config.focus_longtail_exposure_tau,
+                relevance_tau=config.focus_longtail_relevance_tau,
+                conflict_tau=config.focus_longtail_conflict_tau,
             )
-            adaptive_token_overrides = adaptive_observation.selected_token
-            adaptive_base_confidence = (
-                adaptive_observation.base_confidence
+            focus_longtail_token_overrides = (
+                focus_longtail_observation.selected_token
             )
-            adaptive_confidence = adaptive_observation.contrast_confidence
-            adaptive_entropy = adaptive_observation.entropy
-            adaptive_margin = adaptive_observation.margin
-            adaptive_tail_activation = adaptive_observation.tail_activation
-            adaptive_exposure = adaptive_observation.exposure
-            adaptive_relevance_precision = (
-                adaptive_observation.relevance_precision
+            focus_longtail_base_confidence = (
+                focus_longtail_observation.base_confidence
             )
-            adaptive_conflict = adaptive_observation.conflict
-            adaptive_long_tail_mass = adaptive_observation.long_tail_mass
-            adaptive_current_weight = adaptive_observation.current_weight
-            adaptive_effective_history_depth = (
-                adaptive_observation.effective_history_depth
+            focus_longtail_confidence = (
+                focus_longtail_observation.contrast_confidence
             )
-            adaptive_eligible_mask = adaptive_observation.eligible_mask
+            focus_longtail_entropy = focus_longtail_observation.entropy
+            focus_longtail_margin = focus_longtail_observation.margin
+            focus_longtail_tail_activation = (
+                focus_longtail_observation.tail_activation
+            )
+            focus_longtail_exposure = focus_longtail_observation.exposure
+            focus_longtail_relevance_precision = (
+                focus_longtail_observation.relevance_precision
+            )
+            focus_longtail_conflict = focus_longtail_observation.conflict
+            focus_longtail_long_tail_mass = (
+                focus_longtail_observation.long_tail_mass
+            )
+            focus_longtail_current_weight = (
+                focus_longtail_observation.current_weight
+            )
+            focus_longtail_effective_dwell_depth = (
+                focus_longtail_observation.effective_dwell_depth
+            )
+            focus_longtail_eligible_mask = (
+                focus_longtail_observation.eligible_mask
+            )
             decision_stats = replace(
                 stats,
-                contrast_token=adaptive_token_overrides,
-                base_confidence=adaptive_base_confidence,
-                contrast_confidence=adaptive_confidence,
+                contrast_token=focus_longtail_token_overrides,
+                base_confidence=focus_longtail_base_confidence,
+                contrast_confidence=focus_longtail_confidence,
             )
-            contrast_reliability = adaptive_confidence
+            contrast_reliability = focus_longtail_confidence
 
         unified_observation: Optional[UnifiedTrajectoryBatchObservation] = None
         unified_posterior: Optional[UnifiedTrajectoryPosterior] = None
@@ -658,47 +685,92 @@ def visual_contrast_decode(
                 counterfactual_batch.updated_count
             )
 
-        ccd_observation: Optional[CCDHistoryObservation] = None
-        ccd_empty_intersection = False
-        if config.ccd_history_enabled:
+        focus_dwell_observation: Optional[FocusDwellObservation] = None
+        focus_dwell_empty = False
+        if config.focus_dwell_enabled:
             if stats.contrast_probs is None or stats.visual_probs is None:
                 raise RuntimeError(
-                    "CCD history requires dense visual and contrast distributions"
+                    "Focus dwell requires dense visual and contrast "
+                    "distributions"
                 )
-            ccd_observation = observe_ccd_history(
-                ccd_history,
+            focus_dwell_observation = observe_focus_dwell(
+                focus_dwell_frames,
                 stats.contrast_probs,
                 stats.visual_probs,
                 stats.contrast_confidence,
                 stats.apc_mass,
                 mask,
-                history_length=config.ccd_history_length,
-                top_v_positions=config.ccd_top_v_positions,
+                dwell_depth=config.focus_dwell_depth,
+                focus_capacity=config.focus_capacity,
             )
             decision_stats = replace(
                 stats,
-                contrast_token=ccd_observation.marginal_token,
-                base_confidence=ccd_observation.base_confidence,
-                contrast_confidence=ccd_observation.contrast_confidence,
+                contrast_token=focus_dwell_observation.marginal_token,
+                base_confidence=focus_dwell_observation.base_confidence,
+                contrast_confidence=focus_dwell_observation.contrast_confidence,
             )
-            contrast_reliability = ccd_observation.contrast_confidence
-            ccd_empty_intersection = not bool(
-                ccd_observation.eligible_mask.any()
+            contrast_reliability = focus_dwell_observation.contrast_confidence
+            focus_dwell_empty = not bool(
+                focus_dwell_observation.eligible_mask.any()
             )
 
         pressure = None
         commit_budget = int(config.max_commit_per_iteration)
-        if config.adaptive_temporal_enabled:
-            if adaptive_observation is None:
+        if config.focus_longtail_enabled and config.ccaw_enabled:
+            # Combined path: focus_longtail supplies the marginalised token
+            # posterior and eligibility mask, while CCAW acts as a
+            # pressure-adaptive scheduler on the commit budget and (for
+            # inverse_window) the mask capacity used to evaluate pressure.
+            if focus_longtail_observation is None:
                 raise RuntimeError(
-                    "Adaptive temporal history was not constructed"
+                    "Focus long-tail observation was not constructed"
                 )
-            selection = select_ccd_history_positions(
+            pressure_window = build_fixed_window(
+                mask,
+                mask_capacity=(
+                    config.ccaw_max_mask_capacity
+                    if config.ccaw_mode == "inverse_window"
+                    else config.ccaw_block_size
+                    if config.ccaw_mode == "hard_block"
+                    else ccaw_state.mask_capacity
+                ),
+                max_physical_span=config.max_physical_span,
+            )
+            pressure = compute_window_pressure(
+                decision_stats,
+                history_stability,
+                contrast_reliability,
+                pressure_window,
+                config,
+            )
+            if config.ccaw_mode == "hard_block":
+                commit_budget = pressure_adaptive_commit_budget(
+                    pressure,
+                    config,
+                )
+                ccaw_state.mask_capacity = int(config.ccaw_block_size)
+            elif config.ccaw_mode == "inverse_window":
+                update_inverse_ccaw_state(ccaw_state, pressure, config)
+            # legacy mode: state updated later in the shared accumulator
+            selection = select_focus_dwell_positions(
                 decision_stats,
                 mask,
                 config,
-                eligible_mask=adaptive_eligible_mask,
-                marginal_entropy=adaptive_entropy,
+                eligible_mask=focus_longtail_eligible_mask,
+                marginal_entropy=focus_longtail_entropy,
+                max_commit_per_iteration=commit_budget,
+            )
+        elif config.focus_longtail_enabled:
+            if focus_longtail_observation is None:
+                raise RuntimeError(
+                    "Focus long-tail observation was not constructed"
+                )
+            selection = select_focus_dwell_positions(
+                decision_stats,
+                mask,
+                config,
+                eligible_mask=focus_longtail_eligible_mask,
+                marginal_entropy=focus_longtail_entropy,
             )
         elif config.unified_trajectory_enabled:
             if unified_posterior is None:
@@ -722,15 +794,17 @@ def visual_contrast_decode(
                 evidence_lower_bound=counterfactual_lower_bound,
                 effective_exposure=counterfactual_effective_exposure,
             )
-        elif config.ccd_history_enabled:
-            if ccd_observation is None:
-                raise RuntimeError("CCD history observation was not constructed")
-            selection = select_ccd_history_positions(
+        elif config.focus_dwell_enabled:
+            if focus_dwell_observation is None:
+                raise RuntimeError(
+                    "Focus dwell observation was not constructed"
+                )
+            selection = select_focus_dwell_positions(
                 decision_stats,
                 mask,
                 config,
-                eligible_mask=ccd_observation.eligible_mask,
-                marginal_entropy=ccd_observation.marginal_entropy,
+                eligible_mask=focus_dwell_observation.eligible_mask,
+                marginal_entropy=focus_dwell_observation.marginal_entropy,
             )
         elif config.ccaw_enabled and config.ccaw_mode == "hard_block":
             pressure_window = build_fixed_window(
@@ -923,61 +997,72 @@ def visual_contrast_decode(
             counterfactual_fallback_events += int(
                 selection.evidence_state == "fallback"
             )
-        if config.adaptive_temporal_enabled:
-            if adaptive_observation is None:
+        if config.focus_longtail_enabled:
+            if focus_longtail_observation is None:
                 raise RuntimeError(
-                    "Adaptive temporal observation missing at commit"
+                    "Focus long-tail observation missing at commit"
                 )
-            adaptive_eligible = torch.nonzero(
-                adaptive_eligible_mask, as_tuple=True
+            focus_longtail_eligible = torch.nonzero(
+                focus_longtail_eligible_mask, as_tuple=True
             )[0]
-            adaptive_scored_positions += int(masked_positions.numel())
-            adaptive_eligible_positions += int(adaptive_eligible.numel())
-            adaptive_exposure_sum += float(
-                adaptive_exposure[adaptive_eligible].sum().item()
+            focus_longtail_scored_positions += int(masked_positions.numel())
+            focus_longtail_eligible_positions += int(
+                focus_longtail_eligible.numel()
             )
-            adaptive_relevance_precision_sum += float(
-                adaptive_relevance_precision[adaptive_eligible].sum().item()
+            focus_longtail_exposure_sum += float(
+                focus_longtail_exposure[focus_longtail_eligible].sum().item()
             )
-            adaptive_conflict_sum += float(
-                adaptive_conflict[adaptive_eligible].sum().item()
+            focus_longtail_relevance_precision_sum += float(
+                focus_longtail_relevance_precision[focus_longtail_eligible]
+                .sum()
+                .item()
             )
-            adaptive_tail_activation_sum += float(
-                adaptive_tail_activation[adaptive_eligible].sum().item()
+            focus_longtail_conflict_sum += float(
+                focus_longtail_conflict[focus_longtail_eligible].sum().item()
             )
-            adaptive_long_tail_mass_sum += float(
-                adaptive_long_tail_mass[adaptive_eligible].sum().item()
+            focus_longtail_tail_activation_sum += float(
+                focus_longtail_tail_activation[focus_longtail_eligible]
+                .sum()
+                .item()
             )
-            adaptive_current_weight_sum += float(
-                adaptive_current_weight[adaptive_eligible].sum().item()
+            focus_longtail_long_tail_mass_sum += float(
+                focus_longtail_long_tail_mass[focus_longtail_eligible]
+                .sum()
+                .item()
             )
-            adaptive_effective_history_depth_sum += float(
-                adaptive_effective_history_depth[
-                    adaptive_eligible
+            focus_longtail_current_weight_sum += float(
+                focus_longtail_current_weight[focus_longtail_eligible]
+                .sum()
+                .item()
+            )
+            focus_longtail_effective_dwell_depth_sum += float(
+                focus_longtail_effective_dwell_depth[
+                    focus_longtail_eligible
                 ].sum().item()
             )
-            adaptive_tail_active_positions += int(
+            focus_longtail_tail_active_positions += int(
                 (
-                    adaptive_tail_activation[adaptive_eligible] > 0.0
+                    focus_longtail_tail_activation[focus_longtail_eligible]
+                    > 0.0
                 ).sum().item()
             )
-            adaptive_token_replacements += int(
+            focus_longtail_token_replacements += int(
                 (
-                    adaptive_token_overrides[adaptive_eligible]
-                    != stats.contrast_token[adaptive_eligible]
+                    focus_longtail_token_overrides[focus_longtail_eligible]
+                    != stats.contrast_token[focus_longtail_eligible]
                 )
                 .sum()
                 .item()
             )
-            adaptive_committed_token_replacements += int(
+            focus_longtail_committed_token_replacements += int(
                 (
                     selected_tokens != stats.contrast_token[selected]
                 )
                 .sum()
                 .item()
             )
-            adaptive_empty_intersection_fallbacks += int(
-                selection.reason == CCD_EMPTY_INTERSECTION_FALLBACK
+            focus_longtail_empty_dwell_fallbacks += int(
+                selection.reason == FOCUS_DWELL_EMPTY_FALLBACK
             )
         if config.unified_trajectory_enabled:
             if unified_observation is None:
@@ -1027,29 +1112,31 @@ def visual_contrast_decode(
             unified_dual_gate_fallbacks += int(
                 selection.reason == MAX_WINDOW_TOP1_FALLBACK
             )
-        if ccd_observation is not None:
+        if focus_dwell_observation is not None:
             eligible_positions = torch.nonzero(
-                ccd_observation.eligible_mask, as_tuple=True
+                focus_dwell_observation.eligible_mask, as_tuple=True
             )[0]
-            ccd_history_observations += 1
-            ccd_eligible_positions += int(eligible_positions.numel())
-            ccd_empty_intersection_fallbacks += int(
-                selection.reason == CCD_EMPTY_INTERSECTION_FALLBACK
+            focus_dwell_observations += 1
+            focus_dwell_eligible_positions_sum += int(
+                eligible_positions.numel()
             )
-            ccd_marginal_token_changes += int(
+            focus_dwell_empty_fallbacks += int(
+                selection.reason == FOCUS_DWELL_EMPTY_FALLBACK
+            )
+            focus_dwell_marginal_token_changes += int(
                 (
-                    ccd_observation.marginal_token[eligible_positions]
+                    focus_dwell_observation.marginal_token[eligible_positions]
                     != stats.contrast_token[eligible_positions]
                 ).sum().item()
             )
-            ccd_selected_marginal_token_changes += int(
+            focus_dwell_selected_marginal_token_changes += int(
                 (
-                    ccd_observation.marginal_token[selected]
+                    focus_dwell_observation.marginal_token[selected]
                     != stats.contrast_token[selected]
                 ).sum().item()
             )
-            ccd_marginal_entropy_sum += float(
-                ccd_observation.marginal_entropy[
+            focus_dwell_marginal_entropy_sum += float(
+                focus_dwell_observation.marginal_entropy[
                     eligible_positions
                 ].sum().item()
             )
@@ -1059,14 +1146,17 @@ def visual_contrast_decode(
         if not bool((state[0, absolute_positions] == config.mask_id).all()):
             raise RuntimeError("Selector attempted to overwrite a committed token")
         state[0, absolute_positions] = selected_tokens.to(state.dtype)
-        if config.adaptive_temporal_enabled:
-            if adaptive_observation is None:
+        if config.focus_longtail_enabled:
+            if focus_longtail_observation is None:
                 raise RuntimeError(
-                    "Adaptive temporal observation missing after commit"
+                    "Focus long-tail observation missing after commit"
                 )
-            adaptive_temporal_history.append(
-                adaptive_observation.current_snapshot
+            focus_longtail_frames.append(
+                focus_longtail_observation.current_frame
             )
+            focus_longtail_frames = focus_longtail_frames[
+                -focus_longtail_history_depth:
+            ]
 
         if selection.reason == THRESHOLD_COMMIT:
             threshold_commits += int(selected.numel())
@@ -1083,15 +1173,19 @@ def visual_contrast_decode(
         )
 
         if config.collect_trace:
-            ccd_selected_entropy = []
-            if ccd_observation is not None:
+            focus_dwell_selected_entropy = []
+            if focus_dwell_observation is not None:
                 for position in selected.detach().cpu().tolist():
-                    ccd_selected_entropy.append(
+                    focus_dwell_selected_entropy.append(
                         float(
-                            ccd_observation.marginal_entropy[position].item()
+                            focus_dwell_observation.marginal_entropy[
+                                position
+                            ].item()
                         )
                         if bool(
-                            ccd_observation.eligible_mask[position].item()
+                            focus_dwell_observation.eligible_mask[
+                                position
+                            ].item()
                         )
                         else None
                     )
@@ -1225,122 +1319,135 @@ def visual_contrast_decode(
                     "counterfactual_selection_state": (
                         selection.evidence_state
                     ),
-                    "adaptive_temporal_enabled": (
-                        config.adaptive_temporal_enabled
+                    "focus_longtail_enabled": (
+                        config.focus_longtail_enabled
                     ),
-                    "adaptive_history_depth": (
-                        adaptive_observation.history_depth
-                        if adaptive_observation is not None
+                    "focus_longtail_dwell_depth": (
+                        focus_longtail_observation.dwell_depth
+                        if focus_longtail_observation is not None
                         else 0
                     ),
-                    "adaptive_current_top_v_count": (
+                    "focus_longtail_current_capacity_count": (
                         int(
-                            adaptive_observation.current_snapshot.positions.numel()
+                            focus_longtail_observation.current_frame.positions.numel()
                         )
-                        if adaptive_observation is not None
+                        if focus_longtail_observation is not None
                         else 0
                     ),
-                    "adaptive_eligible_count": (
-                        int(adaptive_eligible_mask.sum().item())
+                    "focus_longtail_eligible_count": (
+                        int(focus_longtail_eligible_mask.sum().item())
                     ),
-                    "adaptive_selected_tail_activation": (
-                        adaptive_tail_activation[selected]
+                    "focus_longtail_selected_tail_activation": (
+                        focus_longtail_tail_activation[selected]
                     )
                     .detach()
                     .cpu()
                     .tolist(),
-                    "adaptive_selected_exposure": adaptive_exposure[selected]
+                    "focus_longtail_selected_exposure": (
+                        focus_longtail_exposure[selected]
+                    )
                     .detach()
                     .cpu()
                     .tolist(),
-                    "adaptive_selected_relevance_precision": (
-                        adaptive_relevance_precision[selected]
+                    "focus_longtail_selected_relevance_precision": (
+                        focus_longtail_relevance_precision[selected]
                         .detach()
                         .cpu()
                         .tolist()
                     ),
-                    "adaptive_selected_conflict": adaptive_conflict[selected]
+                    "focus_longtail_selected_conflict": (
+                        focus_longtail_conflict[selected]
+                    )
                     .detach()
                     .cpu()
                     .tolist(),
-                    "adaptive_selected_long_tail_mass": (
-                        adaptive_long_tail_mass[selected]
+                    "focus_longtail_selected_long_tail_mass": (
+                        focus_longtail_long_tail_mass[selected]
                         .detach()
                         .cpu()
                         .tolist()
                     ),
-                    "adaptive_selected_current_weight": (
-                        adaptive_current_weight[selected]
+                    "focus_longtail_selected_current_weight": (
+                        focus_longtail_current_weight[selected]
                         .detach()
                         .cpu()
                         .tolist()
                     ),
-                    "adaptive_selected_effective_history_depth": (
-                        adaptive_effective_history_depth[selected]
+                    "focus_longtail_selected_effective_dwell_depth": (
+                        focus_longtail_effective_dwell_depth[selected]
                         .detach()
                         .cpu()
                         .tolist()
                     ),
-                    "adaptive_selected_entropy": adaptive_entropy[selected]
+                    "focus_longtail_selected_entropy": [
+                        v if math.isfinite(v) else None
+                        for v in focus_longtail_entropy[selected]
+                        .detach()
+                        .cpu()
+                        .tolist()
+                    ],
+                    "focus_longtail_selected_margin": (
+                        focus_longtail_margin[selected]
+                    )
                     .detach()
                     .cpu()
                     .tolist(),
-                    "adaptive_selected_margin": adaptive_margin[selected]
-                    .detach()
-                    .cpu()
-                    .tolist(),
-                    "adaptive_selected_token_changed": (
+                    "focus_longtail_selected_token_changed": (
                         selected_tokens != stats.contrast_token[selected]
                     )
                     .detach()
                     .cpu()
                     .tolist(),
-                    "adaptive_anchor_current_token": int(
+                    "focus_longtail_anchor_current_token": int(
                         stats.contrast_token[history_anchor_position].item()
                     ),
-                    "adaptive_anchor_history_token": int(
-                        adaptive_token_overrides[
+                    "focus_longtail_anchor_marginal_token": int(
+                        focus_longtail_token_overrides[
                             history_anchor_position
                         ].item()
                     ),
-                    "adaptive_anchor_token_changed": bool(
-                        adaptive_token_overrides[history_anchor_position]
+                    "focus_longtail_anchor_token_changed": bool(
+                        focus_longtail_token_overrides[history_anchor_position]
                         != stats.contrast_token[history_anchor_position]
                     ),
-                    "adaptive_anchor_eligible": bool(
-                        adaptive_eligible_mask[history_anchor_position].item()
-                    ),
-                    "adaptive_anchor_tail_activation": float(
-                        adaptive_tail_activation[
+                    "focus_longtail_anchor_eligible": bool(
+                        focus_longtail_eligible_mask[
                             history_anchor_position
                         ].item()
                     ),
-                    "adaptive_anchor_exposure": float(
-                        adaptive_exposure[history_anchor_position].item()
-                    ),
-                    "adaptive_anchor_relevance_precision": float(
-                        adaptive_relevance_precision[
+                    "focus_longtail_anchor_tail_activation": float(
+                        focus_longtail_tail_activation[
                             history_anchor_position
                         ].item()
                     ),
-                    "adaptive_anchor_conflict": float(
-                        adaptive_conflict[history_anchor_position].item()
+                    "focus_longtail_anchor_exposure": float(
+                        focus_longtail_exposure[history_anchor_position].item()
                     ),
-                    "adaptive_anchor_long_tail_mass": float(
-                        adaptive_long_tail_mass[
+                    "focus_longtail_anchor_relevance_precision": float(
+                        focus_longtail_relevance_precision[
                             history_anchor_position
                         ].item()
                     ),
-                    "adaptive_anchor_current_weight": float(
-                        adaptive_current_weight[
+                    "focus_longtail_anchor_conflict": float(
+                        focus_longtail_conflict[history_anchor_position].item()
+                    ),
+                    "focus_longtail_anchor_long_tail_mass": float(
+                        focus_longtail_long_tail_mass[
                             history_anchor_position
                         ].item()
                     ),
-                    "adaptive_anchor_margin": float(
-                        adaptive_margin[history_anchor_position].item()
+                    "focus_longtail_anchor_current_weight": float(
+                        focus_longtail_current_weight[
+                            history_anchor_position
+                        ].item()
                     ),
-                    "adaptive_anchor_confidence": float(
-                        adaptive_confidence[history_anchor_position].item()
+                    "focus_longtail_anchor_margin": float(
+                        focus_longtail_margin[history_anchor_position].item()
+                    ),
+                    "focus_longtail_anchor_confidence": float(
+                        focus_longtail_confidence[
+                            history_anchor_position
+                        ].item()
                     ),
                     "unified_trajectory_enabled": (
                         config.unified_trajectory_enabled
@@ -1387,25 +1494,25 @@ def visual_contrast_decode(
                     .detach()
                     .cpu()
                     .tolist(),
-                    "ccd_history_depth": (
-                        ccd_observation.history_depth
-                        if ccd_observation is not None
+                    "focus_dwell_depth": (
+                        focus_dwell_observation.dwell_depth
+                        if focus_dwell_observation is not None
                         else 0
                     ),
-                    "ccd_current_top_v_count": (
+                    "focus_dwell_current_capacity_count": (
                         int(
-                            ccd_observation.current_snapshot.positions.numel()
+                            focus_dwell_observation.current_frame.positions.numel()
                         )
-                        if ccd_observation is not None
+                        if focus_dwell_observation is not None
                         else 0
                     ),
-                    "ccd_eligible_count": (
-                        int(ccd_observation.eligible_mask.sum().item())
-                        if ccd_observation is not None
+                    "focus_dwell_eligible_count": (
+                        int(focus_dwell_observation.eligible_mask.sum().item())
+                        if focus_dwell_observation is not None
                         else 0
                     ),
-                    "ccd_empty_intersection_fallback": (
-                        ccd_empty_intersection
+                    "focus_dwell_empty_fallback": (
+                        focus_dwell_empty
                     ),
                     "commit_budget": commit_budget,
                     "persistent_mask_capacity": ccaw_state.mask_capacity,
@@ -1442,19 +1549,19 @@ def visual_contrast_decode(
                     .detach()
                     .cpu()
                     .tolist(),
-                    "ccd_marginal_token_changed": (
+                    "focus_dwell_marginal_token_changed": (
                         (
-                            ccd_observation.marginal_token[selected]
+                            focus_dwell_observation.marginal_token[selected]
                             != stats.contrast_token[selected]
                         )
                         .detach()
                         .cpu()
                         .tolist()
-                        if ccd_observation is not None
+                        if focus_dwell_observation is not None
                         else []
                     ),
-                    "ccd_marginal_entropy": (
-                        ccd_selected_entropy
+                    "focus_dwell_marginal_entropy": (
+                        focus_dwell_selected_entropy
                     ),
                     "counterfactual_selected_evidence": (
                         counterfactual_selected_evidence
@@ -1488,9 +1595,11 @@ def visual_contrast_decode(
                 for position, update in history_updates.items()
                 if position not in selected_set
             }
-        if config.adaptive_temporal_enabled:
-            previous_adaptive_commit_positions = selected.detach().clone()
-            previous_adaptive_commit_relevance = (
+        if config.focus_longtail_enabled:
+            previous_focus_longtail_commit_positions = (
+                selected.detach().clone()
+            )
+            previous_focus_longtail_commit_relevance = (
                 stats.visual_relevance[selected].detach().float().clone()
             )
         if config.unified_trajectory_enabled:
@@ -1516,9 +1625,11 @@ def visual_contrast_decode(
             previous_counterfactual_commit_relevance = (
                 stats.visual_relevance[selected].detach().float().clone()
             )
-        if ccd_observation is not None:
-            ccd_history.append(ccd_observation.current_snapshot)
-            ccd_history = ccd_history[-int(config.ccd_history_length) :]
+        if focus_dwell_observation is not None:
+            focus_dwell_frames.append(focus_dwell_observation.current_frame)
+            focus_dwell_frames = focus_dwell_frames[
+                -int(config.focus_dwell_depth) :
+            ]
         context_version += 1
         if config.ccaw_enabled and pressure is not None:
             ccaw_pressure_sum += pressure.combined
@@ -1526,6 +1637,24 @@ def visual_contrast_decode(
             ccaw_history_instability_sum += pressure.history_instability
             ccaw_qualification_deficit_sum += pressure.qualification_deficit
             ccaw_pressure_count += 1
+            # Split-by-reason accumulators. Fallback steps (no qualified
+            # candidate) systematically produce pressure~=1/3 because
+            # qualification_deficit=1 and the other two terms are ~0, so
+            # aggregating them into the overall mean masks the true
+            # per-step signal. Keep the total mean, but also expose the
+            # qualified/fallback strata separately.
+            if selection.reason == THRESHOLD_COMMIT:
+                ccaw_pressure_sum_qualified += pressure.combined
+                ccaw_qualification_deficit_sum_qualified += (
+                    pressure.qualification_deficit
+                )
+                ccaw_qualified_commit_count += 1
+            else:
+                ccaw_pressure_sum_fallback += pressure.combined
+                ccaw_qualification_deficit_sum_fallback += (
+                    pressure.qualification_deficit
+                )
+                ccaw_fallback_commit_count += 1
             ccaw_commit_budget_sum += commit_budget
             ccaw_commit_budget_count += 1
             ccaw_min_commit_budget = min(
@@ -1626,128 +1755,141 @@ def visual_contrast_decode(
             if history_observations
             else 1.0
         ),
-        "ccd_history_enabled": bool(config.ccd_history_enabled),
-        "ccd_history_length": int(config.ccd_history_length),
-        "ccd_top_v_positions": int(config.ccd_top_v_positions),
-        "ccd_history_observations": ccd_history_observations,
-        "ccd_empty_intersection_fallbacks": (
-            ccd_empty_intersection_fallbacks
+        "focus_dwell_enabled": bool(config.focus_dwell_enabled),
+        "focus_dwell_depth": int(config.focus_dwell_depth),
+        "focus_capacity": int(config.focus_capacity),
+        "focus_dwell_observations": focus_dwell_observations,
+        "focus_dwell_empty_fallbacks": (
+            focus_dwell_empty_fallbacks
         ),
-        "ccd_mean_eligible_positions": (
-            ccd_eligible_positions / ccd_history_observations
-            if ccd_history_observations
+        "focus_dwell_mean_eligible_positions": (
+            focus_dwell_eligible_positions_sum / focus_dwell_observations
+            if focus_dwell_observations
             else 0.0
         ),
-        "ccd_mean_marginal_entropy": (
-            ccd_marginal_entropy_sum / ccd_eligible_positions
-            if ccd_eligible_positions
+        "focus_dwell_mean_marginal_entropy": (
+            focus_dwell_marginal_entropy_sum
+            / focus_dwell_eligible_positions_sum
+            if focus_dwell_eligible_positions_sum
             else 0.0
         ),
-        "ccd_marginal_token_changes": ccd_marginal_token_changes,
-        "ccd_marginal_token_change_rate": (
-            ccd_marginal_token_changes / ccd_eligible_positions
-            if ccd_eligible_positions
+        "focus_dwell_marginal_token_changes": (
+            focus_dwell_marginal_token_changes
+        ),
+        "focus_dwell_marginal_token_change_rate": (
+            focus_dwell_marginal_token_changes
+            / focus_dwell_eligible_positions_sum
+            if focus_dwell_eligible_positions_sum
             else 0.0
         ),
-        "ccd_selected_marginal_token_changes": (
-            ccd_selected_marginal_token_changes
+        "focus_dwell_selected_marginal_token_changes": (
+            focus_dwell_selected_marginal_token_changes
         ),
-        "adaptive_temporal_enabled": bool(
-            config.adaptive_temporal_enabled
+        "focus_longtail_enabled": bool(
+            config.focus_longtail_enabled
         ),
-        "adaptive_temporal_kernel": "shifted_loglogistic_survival",
-        "adaptive_temporal_stability_length": int(
-            config.ccd_history_length
+        "focus_longtail_kernel_type": "shifted_loglogistic_survival",
+        "focus_longtail_dwell_depth": int(
+            config.focus_dwell_depth
         ),
-        "adaptive_temporal_top_v_positions": int(
-            config.ccd_top_v_positions
+        "focus_longtail_capacity": int(
+            config.focus_capacity
         ),
-        "adaptive_temporal_loglogistic_scale": float(
-            config.adaptive_temporal_loglogistic_scale
+        "focus_longtail_kernel_scale": float(
+            config.focus_longtail_kernel_scale
         ),
-        "adaptive_temporal_loglogistic_shape": float(
-            config.adaptive_temporal_loglogistic_shape
+        "focus_longtail_kernel_shape": float(
+            config.focus_longtail_kernel_shape
         ),
-        "adaptive_temporal_loglogistic_offset": float(
-            config.adaptive_temporal_loglogistic_offset
+        "focus_longtail_kernel_offset": float(
+            config.focus_longtail_kernel_offset
         ),
-        "adaptive_temporal_tail_mix_max": float(
-            config.adaptive_temporal_tail_mix_max
+        "focus_longtail_mix_ceiling": float(
+            config.focus_longtail_mix_ceiling
         ),
-        "adaptive_temporal_exposure_scale": float(
-            config.adaptive_temporal_exposure_scale
+        "focus_longtail_exposure_tau": float(
+            config.focus_longtail_exposure_tau
         ),
-        "adaptive_temporal_relevance_scale": float(
-            config.adaptive_temporal_relevance_scale
+        "focus_longtail_relevance_tau": float(
+            config.focus_longtail_relevance_tau
         ),
-        "adaptive_temporal_conflict_scale": float(
-            config.adaptive_temporal_conflict_scale
+        "focus_longtail_conflict_tau": float(
+            config.focus_longtail_conflict_tau
         ),
-        "adaptive_temporal_full_distribution": True,
-        "adaptive_temporal_token_visual_residual": False,
-        "adaptive_temporal_ccd_identity_at_zero_activation": True,
-        "adaptive_temporal_fallback_policy": "ccd",
-        "adaptive_temporal_scored_positions": adaptive_scored_positions,
-        "adaptive_temporal_eligible_positions": adaptive_eligible_positions,
-        "adaptive_temporal_eligible_rate": (
-            adaptive_eligible_positions / adaptive_scored_positions
-            if adaptive_scored_positions
+        "focus_longtail_full_distribution": True,
+        "focus_longtail_token_visual_residual": False,
+        "focus_longtail_dwell_identity_at_zero_activation": True,
+        "focus_longtail_fallback_policy": "focus_dwell",
+        "focus_longtail_scored_positions": focus_longtail_scored_positions,
+        "focus_longtail_eligible_positions": (
+            focus_longtail_eligible_positions
+        ),
+        "focus_longtail_eligible_rate": (
+            focus_longtail_eligible_positions
+            / focus_longtail_scored_positions
+            if focus_longtail_scored_positions
             else 0.0
         ),
-        "adaptive_temporal_tail_activation_rate": (
-            adaptive_tail_active_positions / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_tail_activation_rate": (
+            focus_longtail_tail_active_positions
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_tail_activation": (
-            adaptive_tail_activation_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_tail_activation": (
+            focus_longtail_tail_activation_sum
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_exposure": (
-            adaptive_exposure_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_exposure": (
+            focus_longtail_exposure_sum / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_relevance_precision": (
-            adaptive_relevance_precision_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_relevance_precision": (
+            focus_longtail_relevance_precision_sum
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_conflict": (
-            adaptive_conflict_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_conflict": (
+            focus_longtail_conflict_sum / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_long_tail_mass": (
-            adaptive_long_tail_mass_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_long_tail_mass": (
+            focus_longtail_long_tail_mass_sum
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_current_weight": (
-            adaptive_current_weight_sum / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_current_weight": (
+            focus_longtail_current_weight_sum
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_mean_effective_history_depth": (
-            adaptive_effective_history_depth_sum
-            / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_mean_effective_dwell_depth": (
+            focus_longtail_effective_dwell_depth_sum
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_token_replacements": (
-            adaptive_token_replacements
+        "focus_longtail_token_replacements": (
+            focus_longtail_token_replacements
         ),
-        "adaptive_temporal_token_replacement_rate": (
-            adaptive_token_replacements / adaptive_eligible_positions
-            if adaptive_eligible_positions
+        "focus_longtail_token_replacement_rate": (
+            focus_longtail_token_replacements
+            / focus_longtail_eligible_positions
+            if focus_longtail_eligible_positions
             else 0.0
         ),
-        "adaptive_temporal_committed_token_replacements": (
-            adaptive_committed_token_replacements
+        "focus_longtail_committed_token_replacements": (
+            focus_longtail_committed_token_replacements
         ),
-        "adaptive_temporal_empty_intersection_fallbacks": (
-            adaptive_empty_intersection_fallbacks
+        "focus_longtail_empty_dwell_fallbacks": (
+            focus_longtail_empty_dwell_fallbacks
         ),
         "unified_trajectory_enabled": bool(
             config.unified_trajectory_enabled
@@ -1937,6 +2079,7 @@ def visual_contrast_decode(
         "counterfactual_fallback_events": counterfactual_fallback_events,
         "ccaw_enabled": bool(config.ccaw_enabled),
         "ccaw_mode": config.ccaw_mode,
+        "ccaw_pressure_scale": float(config.ccaw_pressure_scale),
         "ccaw_block_size": int(config.ccaw_block_size),
         "ccaw_min_commit_per_iteration": int(
             config.ccaw_min_commit_per_iteration
@@ -1964,6 +2107,31 @@ def visual_contrast_decode(
         "ccaw_mean_qualification_deficit": (
             ccaw_qualification_deficit_sum / ccaw_pressure_count
             if ccaw_pressure_count
+            else 0.0
+        ),
+        "ccaw_pressure_filter": config.ccaw_pressure_filter,
+        "ccaw_qualified_commit_count": ccaw_qualified_commit_count,
+        "ccaw_fallback_commit_count": ccaw_fallback_commit_count,
+        "ccaw_mean_pressure_qualified": (
+            ccaw_pressure_sum_qualified / ccaw_qualified_commit_count
+            if ccaw_qualified_commit_count
+            else 0.0
+        ),
+        "ccaw_mean_pressure_fallback": (
+            ccaw_pressure_sum_fallback / ccaw_fallback_commit_count
+            if ccaw_fallback_commit_count
+            else 0.0
+        ),
+        "ccaw_mean_qualification_deficit_qualified": (
+            ccaw_qualification_deficit_sum_qualified
+            / ccaw_qualified_commit_count
+            if ccaw_qualified_commit_count
+            else 0.0
+        ),
+        "ccaw_mean_qualification_deficit_fallback": (
+            ccaw_qualification_deficit_sum_fallback
+            / ccaw_fallback_commit_count
+            if ccaw_fallback_commit_count
             else 0.0
         ),
         "ccaw_mean_commit_budget": (

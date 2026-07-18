@@ -64,6 +64,8 @@ class VCHDDecodeConfig:
     mask_capacity: int = 16
     max_physical_span: int = 128
     fallback_to_raw: bool = False
+    fallback_mask_capacity: int = 0
+    fallback_policy: str = "readiness"
 
     force_math_sdpa: bool = True
     cache_type: str = "none"
@@ -121,8 +123,10 @@ class VCHDDecodeConfig:
     ccaw_qualified_budget: int = 1
     ccaw_max_mask_capacity: int = 64
     ccaw_pressure_ema_decay: float = 0.8
+    ccaw_pressure_scale: float = 1.0
     ccaw_expand_step: int = 8
     ccaw_shrink_step: int = 4
+    ccaw_pressure_filter: str = "none"
 
     def validate(self) -> None:
         if self.mask_id < 0:
@@ -154,6 +158,13 @@ class VCHDDecodeConfig:
             raise ValueError(
                 "max_physical_span must be at least mask_capacity "
                 f"({self.max_physical_span} < {self.mask_capacity})"
+            )
+        if self.fallback_mask_capacity < 0:
+            raise ValueError("fallback_mask_capacity must be non-negative")
+        if self.fallback_policy not in {"readiness", "leftmost"}:
+            raise ValueError(
+                "fallback_policy must be 'readiness' or 'leftmost', got "
+                f"{self.fallback_policy!r}"
             )
         if self.history_top_v_tokens < 2:
             raise ValueError(
@@ -492,10 +503,23 @@ class VCHDDecodeConfig:
                 "ccaw_pressure_ema_decay must be in [0, 1), got "
                 f"{self.ccaw_pressure_ema_decay}"
             )
+        if (
+            not math.isfinite(self.ccaw_pressure_scale)
+            or self.ccaw_pressure_scale <= 0.0
+        ):
+            raise ValueError(
+                "ccaw_pressure_scale must be finite and positive, got "
+                f"{self.ccaw_pressure_scale}"
+            )
         if self.ccaw_expand_step < 1:
             raise ValueError("ccaw_expand_step must be at least 1")
         if self.ccaw_shrink_step < 1:
             raise ValueError("ccaw_shrink_step must be at least 1")
+        if self.ccaw_pressure_filter not in {"none", "ema"}:
+            raise ValueError(
+                "ccaw_pressure_filter must be 'none' or 'ema', got "
+                f"{self.ccaw_pressure_filter!r}"
+            )
         if self.max_commit_per_iteration > self.ccaw_max_mask_capacity:
             raise ValueError(
                 "max_commit_per_iteration cannot exceed "

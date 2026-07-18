@@ -85,6 +85,8 @@ class MMaDA(BaseModel):
                  vchd_mask_capacity=16,
                  vchd_max_commit=16,
                  vchd_fallback_to_raw=False,
+                 vchd_fallback_mask_capacity=0,
+                 vchd_fallback_policy='readiness',
                  vchd_alpha=0.5,
                  vchd_beta=0.1,
                  vchd_history_enabled=False,
@@ -134,8 +136,10 @@ class MMaDA(BaseModel):
                  vchd_ccaw_qualified_budget=1,
                  vchd_ccaw_max_capacity=64,
                  vchd_ccaw_pressure_decay=0.8,
+                 vchd_ccaw_pressure_scale=1.0,
                  vchd_ccaw_expand_step=8,
                  vchd_ccaw_shrink_step=4,
+                 vchd_ccaw_pressure_filter='none',
                  vchd_cache_type='none',
                  vchd_cache_refresh_interval=8,
                  vchd_cache_refresh_on_pressure=True,
@@ -190,6 +194,16 @@ class MMaDA(BaseModel):
                 '1' if vchd_fallback_to_raw else '0',
             )
             == '1'
+        )
+        self.vchd_fallback_mask_capacity = int(
+            os.getenv(
+                'MMADA_VCHD_FALLBACK_CAPACITY',
+                vchd_fallback_mask_capacity,
+            )
+        )
+        self.vchd_fallback_policy = os.getenv(
+            'MMADA_VCHD_FALLBACK_POLICY',
+            vchd_fallback_policy,
         )
         self.vchd_alpha = float(
             os.getenv('MMADA_VCHD_ALPHA', vchd_alpha)
@@ -482,6 +496,12 @@ class MMaDA(BaseModel):
                 vchd_ccaw_pressure_decay,
             )
         )
+        self.vchd_ccaw_pressure_scale = float(
+            os.getenv(
+                'MMADA_VCHD_CCAW_PRESSURE_SCALE',
+                vchd_ccaw_pressure_scale,
+            )
+        )
         self.vchd_ccaw_expand_step = int(
             os.getenv(
                 'MMADA_VCHD_CCAW_EXPAND_STEP',
@@ -493,6 +513,10 @@ class MMaDA(BaseModel):
                 'MMADA_VCHD_CCAW_SHRINK_STEP',
                 vchd_ccaw_shrink_step,
             )
+        )
+        self.vchd_ccaw_pressure_filter = os.getenv(
+            'MMADA_VCHD_CCAW_PRESSURE_FILTER',
+            vchd_ccaw_pressure_filter,
         )
         self.vchd_cache_type = os.getenv(
             'MMADA_VCHD_CACHE_TYPE',
@@ -708,6 +732,10 @@ class MMaDA(BaseModel):
                 ),
                 max_commit_per_iteration=self.vchd_max_commit,
                 fallback_to_raw=self.vchd_fallback_to_raw,
+                fallback_mask_capacity=(
+                    self.vchd_fallback_mask_capacity
+                ),
+                fallback_policy=self.vchd_fallback_policy,
                 force_math_sdpa=(
                     os.getenv('MMADA_VCHD_FORCE_MATH_SDPA', '1') == '1'
                 ),
@@ -840,8 +868,10 @@ class MMaDA(BaseModel):
                 ccaw_qualified_budget=self.vchd_ccaw_qualified_budget,
                 ccaw_max_mask_capacity=self.vchd_ccaw_max_capacity,
                 ccaw_pressure_ema_decay=self.vchd_ccaw_pressure_decay,
+                ccaw_pressure_scale=self.vchd_ccaw_pressure_scale,
                 ccaw_expand_step=self.vchd_ccaw_expand_step,
                 ccaw_shrink_step=self.vchd_ccaw_shrink_step,
+                ccaw_pressure_filter=self.vchd_ccaw_pressure_filter,
             )
             self.vchd_config.validate()
             warnings.warn(

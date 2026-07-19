@@ -96,6 +96,37 @@ See
 `MMaDA_DCD_cloud_bundle_20260711/MMaDA/docs/vchd_focus_longtail.md`
 for formulas, defaults, and diagnostics.
 
+## VSHD + CCAW (inverse_window, EMA pressure ×3)
+
+Current VLind v302 recipe for plain VSHD (fixed dual-gate, no history /
+no focus-longtail) with CCAW StrongShrink:
+
+| Knob | Value |
+|---|---|
+| `--strategy` | `vchd` |
+| `--vchd-profile` | `ccaw` |
+| `--vchd-ccaw-mode` | `inverse_window` |
+| `--vchd-ccaw-pressure-filter` | `ema` |
+| `--vchd-ccaw-pressure-scale` | `3.0` |
+| `--vchd-ccaw-max-capacity` | `64` |
+| `--vchd-ccaw-pressure-decay` | `0.8` |
+| `--vchd-ccaw-expand-step` / `--shrink-step` | `8` / `4` |
+| history / focus_longtail | off |
+| generation | `128` tokens / `128` steps / block `64`, `T=0.8` |
+
+VLind-Bench v302 scores (`a / b / c / d_M / c_raw / d_raw`):
+
+```text
+46.0 & 57.6 & 76.3 & 21.1 & 65.6 & 24.0
+```
+
+Reproduce with:
+
+```bash
+bash VLind-Bench/scripts/run_vshd_ccaw_inverse_ema_scale3.sh
+# optional: GLOBAL_IDS="1,2,..." CUDA_DEVICE=0 TAG=mmada_vchd_ccaw_inverse_ema_scale3_v302
+```
+
 ## CPU regression tests
 
 ```bash

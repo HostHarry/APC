@@ -13,9 +13,12 @@
 # VLind is evaluation glue only; datasets and outputs stay external.
 /VLind-Bench/*
 !/VLind-Bench/eval/
+!/VLind-Bench/scripts/
 /VLind-Bench/eval/*
 !/VLind-Bench/eval/mmada_eval.py
 !/VLind-Bench/eval/score_pipeline.py
+/VLind-Bench/scripts/*
+!/VLind-Bench/scripts/run_vshd_ccaw_inverse_ema_scale3.sh
 
 # Python and test caches.
 **/__pycache__/

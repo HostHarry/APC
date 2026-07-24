@@ -93,6 +93,49 @@ See
 `MMaDA_DCD_cloud_bundle_20260711/MMaDA/docs/vchd_loglogistic_history.md`
 for formulas and diagnostics.
 
+## SWD / PSP / VRG reproduction
+
+The original-remasking path supports three training-free controls:
+
+- SWD: `MMADA_THINKING_SWD=1` and
+  `MMADA_THINKING_SWD_LAMBDA=5.0`
+- PSP: `MMADA_THINKING_PSP=1` and
+  `MMADA_THINKING_PSP_GAMMA=0.5`
+- VRG (normally combined with PSP): `MMADA_THINKING_VRG=1` and
+  `MMADA_THINKING_VRG_SCALE=0.5`
+
+Set `MMADA_DECODE_STRATEGY=original` when invoking VLMEvalKit directly.
+The reproduction runners set the strategy and method-specific variables:
+
+```bash
+bash VLind-Bench/scripts/run_llavabench_thinking_infer.sh
+```
+
+The MMBench runner defaults to `MMBench_DEV_EN_2C` and the methods
+`swd psp psp_vrg`. Prepare its two-cycle manifest from the ordinary
+MMBench development TSV:
+
+```bash
+export LMUData=/path/to/LMUData
+python VLind-Bench/scripts/make_mmbench_two_cycle.py \
+  "$LMUData/MMBench_DEV_EN.tsv" \
+  "$LMUData/MMBench_DEV_EN_2C.tsv"
+bash VLind-Bench/scripts/run_mmbench_thinking_chain.sh
+```
+
+If `MMBench_DEV_EN_2C.tsv` is absent but `MMBench_DEV_EN.tsv` exists, the
+runner safely performs this generation step itself; if both are absent, it
+stops and prints the exact generation command. The registered two-cycle
+dataset shares `LMUData/images/MMBench` with `MMBench_DEV_EN`; no images are
+copied into the repository.
+
+The scripts resolve source code from this checkout. External weights and data
+default to `/root/autodl-tmp`; override that parent with
+`MMADA_EXTERNAL_ROOT`, or set `MMADA_MODEL_PATH`, `MMADA_TOKENIZER_PATH`,
+`MMADA_VQ_MODEL_PATH`, `MMADA_LMUDATA_SOURCE`, and `LMUData` individually.
+Use `MMADA_OUTPUT_ROOT` to relocate generated outputs. This repository does
+not include model weights, benchmark data, logs, predictions, or results.
+
 ## CPU regression tests
 
 ```bash
@@ -100,6 +143,8 @@ cd MMaDA_DCD_cloud_bundle_20260711/MMaDA
 python -m py_compile decoding/*.py \
   evaluation/VLMEvalKit/vlmeval/vlm/mmada/mmada.py
 python -m pytest \
+  tests/test_thinking_swd.py \
+  tests/test_mmbench_two_cycle.py \
   tests/test_vchd.py \
   tests/test_vchd_history_ccaw.py \
   tests/test_vchd_cache.py

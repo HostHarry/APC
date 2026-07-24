@@ -28,6 +28,11 @@ DATASET_CONFIGS = {
         "steps": 128,
         "block_length": 64,
     },
+    "MMBench_DEV_EN_2C": {
+        "max_new_tokens": 128,
+        "steps": 128,
+        "block_length": 64,
+    },
     "MathVision": {
         "max_new_tokens": 512,
         "steps": 256,

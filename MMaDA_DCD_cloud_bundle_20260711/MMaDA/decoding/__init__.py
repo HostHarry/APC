@@ -33,6 +33,14 @@ from .mmada_adapter import (
     PairedLogits,
     build_paired_attention_bias,
 )
+from .swd import SwdState, apply_swd_to_confidence, kl_prev_vs_curr, stability_weight
+from .thinking_diffusion import (
+    ThinkingSwdDecodeConfig,
+    apply_psp,
+    apply_vrg,
+    resolve_thinking_swd_config,
+    thinking_swd_config_from_dict,
+)
 from .vocabulary import build_valid_text_vocab
 from .window import (
     CCAWState,
@@ -59,11 +67,16 @@ __all__ = [
     "PairedKVCache",
     "PairedLogits",
     "SparseHistory",
+    "SwdState",
+    "ThinkingSwdDecodeConfig",
     "UnifiedCandidateTrajectory",
     "UnifiedTrajectoryBatchObservation",
     "UnifiedTrajectoryPosterior",
     "VCHDDecodeConfig",
     "WindowPressure",
+    "apply_psp",
+    "apply_swd_to_confidence",
+    "apply_vrg",
     "build_paired_attention_bias",
     "build_valid_text_vocab",
     "compute_contrast_stats",
@@ -82,6 +95,10 @@ __all__ = [
     "scope_next_hard_block",
     "sparse_distribution_from_dense",
     "sparse_jsd",
+    "kl_prev_vs_curr",
+    "resolve_thinking_swd_config",
+    "stability_weight",
+    "thinking_swd_config_from_dict",
     "update_ccaw_state",
     "update_inverse_ccaw_state",
     "vchd_config_from_dict",

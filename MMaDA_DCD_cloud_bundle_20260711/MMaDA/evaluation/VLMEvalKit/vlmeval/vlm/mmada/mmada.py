@@ -18,6 +18,7 @@ try:
     from models import MAGVITv2, MMadaModelLM
     from models.mmada_decode import MMaDADecodeConfig, decode_config_from_dict
     from decoding import VCHDDecodeConfig
+    from decoding.thinking_diffusion import ThinkingSwdDecodeConfig
     from models.attention_hooks import collect_attentions
     from training.prompting_utils import UniversalPrompting
     from training.utils import image_transform, image_transform_squash
@@ -27,6 +28,7 @@ except ImportError as e:
     from models import MAGVITv2, MMadaConfig, MMadaModelLM
     from models.mmada_decode import MMaDADecodeConfig, decode_config_from_dict
     from decoding import VCHDDecodeConfig
+    from decoding.thinking_diffusion import ThinkingSwdDecodeConfig
     from models.attention_hooks import collect_attentions
     from training.prompting_utils import UniversalPrompting
     from training.utils import image_transform, image_transform_squash
@@ -144,6 +146,12 @@ class MMaDA(BaseModel):
                  vchd_cache_refresh_interval=8,
                  vchd_cache_refresh_on_pressure=True,
                  vchd_cache_pressure_threshold=0.60,
+                 thinking_psp_enabled=False,
+                 thinking_psp_gamma=0.5,
+                 thinking_vrg_enabled=False,
+                 thinking_vrg_scale=0.5,
+                 thinking_swd_enabled=False,
+                 thinking_swd_lambda=5.0,
                  **kwargs):
         self.use_cot = (os.getenv('USE_COT') == '1')
         print(f"use_cot: {self.use_cot}")
@@ -913,6 +921,60 @@ class MMaDA(BaseModel):
                 f"eos={normalized_eos}"
             )
 
+        self.thinking_psp_enabled = (
+            os.getenv(
+                'MMADA_THINKING_PSP',
+                '1' if thinking_psp_enabled else '0',
+            )
+            == '1'
+        )
+        self.thinking_psp_gamma = float(
+            os.getenv('MMADA_THINKING_PSP_GAMMA', thinking_psp_gamma)
+        )
+        self.thinking_vrg_enabled = (
+            os.getenv(
+                'MMADA_THINKING_VRG',
+                '1' if thinking_vrg_enabled else '0',
+            )
+            == '1'
+        )
+        self.thinking_vrg_scale = float(
+            os.getenv('MMADA_THINKING_VRG_SCALE', thinking_vrg_scale)
+        )
+        self.thinking_swd_enabled = (
+            os.getenv(
+                'MMADA_THINKING_SWD',
+                '1' if thinking_swd_enabled else '0',
+            )
+            == '1'
+        )
+        self.thinking_swd_lambda = float(
+            os.getenv('MMADA_THINKING_SWD_LAMBDA', thinking_swd_lambda)
+        )
+        self.thinking_swd_config = ThinkingSwdDecodeConfig(
+            psp_enabled=self.thinking_psp_enabled,
+            psp_gamma=self.thinking_psp_gamma,
+            vrg_enabled=self.thinking_vrg_enabled,
+            vrg_scale=self.thinking_vrg_scale,
+            swd_enabled=self.thinking_swd_enabled,
+            swd_lambda=self.thinking_swd_lambda,
+        )
+        self.thinking_swd_config.validate()
+        if self.decode_strategy == 'original' and (
+            self.thinking_psp_enabled
+            or self.thinking_vrg_enabled
+            or self.thinking_swd_enabled
+        ):
+            warnings.warn(
+                "[MMaDA] Thinking/SWD on original remasking: "
+                f"psp={self.thinking_psp_enabled} "
+                f"(gamma={self.thinking_psp_gamma}), "
+                f"vrg={self.thinking_vrg_enabled} "
+                f"(scale={self.thinking_vrg_scale}), "
+                f"swd={self.thinking_swd_enabled} "
+                f"(lambda={self.thinking_swd_lambda})"
+            )
+
         # Optional attention collection (env-controlled, OFF by default).
         # Useful for inspecting how DCD attends across the prompt; enabling on a
         # full benchmark will produce hundreds of GB of dumps, so it is gated.
@@ -1123,6 +1185,13 @@ class MMaDA(BaseModel):
         elif self.decode_strategy in ('vchd', 'vchd_fixed') and self.vchd_config is not None:
             generation_kwargs['decode_strategy'] = self.decode_strategy
             generation_kwargs['decode_config'] = self.vchd_config
+        elif self.decode_strategy == 'original' and (
+            self.thinking_psp_enabled
+            or self.thinking_vrg_enabled
+            or self.thinking_swd_enabled
+        ):
+            generation_kwargs['decode_strategy'] = 'original'
+            generation_kwargs['decode_config'] = self.thinking_swd_config
         
         if dataset:
             warnings.warn(f"Using generation config for {dataset}: {generation_kwargs}")

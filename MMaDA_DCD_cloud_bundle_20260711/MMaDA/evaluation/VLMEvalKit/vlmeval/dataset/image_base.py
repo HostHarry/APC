@@ -18,7 +18,8 @@ def img_root_map(dataset):
         return "QSpatial"
 
     mmbench_root_map = {
-        'MMBench_DEV_EN': 'MMBench', 'MMBench_TEST_EN': 'MMBench',
+        'MMBench_DEV_EN': 'MMBench', 'MMBench_DEV_EN_2C': 'MMBench',
+        'MMBench_TEST_EN': 'MMBench',
         'MMBench_DEV_CN': 'MMBench', 'MMBench_TEST_CN': 'MMBench',
         'MMBench': 'MMBench', 'MMBench_CN': 'MMBench',
         'MMBench_DEV_EN_V11': 'MMBench_V11', 'MMBench_TEST_EN_V11': 'MMBench_V11',

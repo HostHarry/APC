@@ -16,6 +16,12 @@
 /VLind-Bench/eval/*
 !/VLind-Bench/eval/mmada_eval.py
 !/VLind-Bench/eval/score_pipeline.py
+!/VLind-Bench/scripts/
+/VLind-Bench/scripts/*
+!/VLind-Bench/scripts/make_mmbench_two_cycle.py
+!/VLind-Bench/scripts/run_llavabench_thinking_infer.sh
+!/VLind-Bench/scripts/run_mmbench_thinking_chain.sh
+!/VLind-Bench/scripts/run_mmbench_4way_2cycle.sh
 
 # Python and test caches.
 **/__pycache__/

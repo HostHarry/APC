@@ -135,7 +135,11 @@ class LlavaDreamForMaskedDiffusion(DreamModel,LlavaMetaForCausalLM):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        attention_mask = None
+        # Preserve explicit 4D additive masks (used by VCHD paired visual/ablated forwards).
+        # The historical Dream training path relied on an unmasked bidirectional encoder, so
+        # 2D padding masks are still ignored unless a full attention bias is provided.
+        if attention_mask is not None and getattr(attention_mask, "ndim", 0) != 4:
+            attention_mask = None
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -333,11 +337,128 @@ class LlavaDreamForMaskedDiffusion(DreamModel,LlavaMetaForCausalLM):
         output_history=False,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
+        from dataclasses import dataclass
+
+        from llava.decoding.generate_utils import coerce_vchd_config, extract_decode_options
+        from llava.decoding import (
+            LaViDaVisualAccessAdapter,
+            infer_visual_mask_from_expanded_ids,
+            visual_contrast_decode,
+        )
+
         modalities = kwargs.pop("modalities", None) if "modalities" in kwargs and modalities is None else modalities
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
+
+        decode_strategy, decode_config = extract_decode_options(kwargs)
+        tokenizer = kwargs.pop("tokenizer", None)
+
+        if decode_strategy in ("vchd", "vchd_fixed"):
+            if images is None:
+                raise ValueError("VCHD decoding requires visual inputs")
+            if kwargs.get("prefix_lm", False):
+                raise ValueError("VCHD decoding does not support prefix_lm=True")
+            if inputs is not None and inputs.shape[0] != 1:
+                raise ValueError("VCHD decoding supports batch_size=1 only")
+
+            (
+                _input_ids,
+                position_ids,
+                attention_mask,
+                _past,
+                inputs_embeds,
+                _labels,
+                expanded_ids,
+            ) = self.prepare_inputs_labels_for_multimodal(
+                inputs,
+                position_ids,
+                attention_mask,
+                None,
+                None,
+                images,
+                modalities,
+                image_sizes=image_sizes,
+                return_inputs=True,
+            )
+            prompt_len = int(inputs_embeds.shape[1])
+            kwargs.pop("block_length", None)
+            kwargs.pop("step_per_block", None)
+            kwargs.pop("step_ratio", None)
+            kwargs.pop("schedule", None)
+            kwargs.pop("schedule_kwargs", None)
+            kwargs.pop("prefix_lm", None)
+            kwargs.pop("do_sample", None)
+            kwargs.pop("num_beams", None)
+            kwargs.pop("pad_token_id", None)
+            kwargs.pop("use_cache", None)
+            kwargs.pop("stopping_criteria", None)
+            kwargs.pop("alg", None)
+            kwargs.pop("alg_temp", None)
+            kwargs.pop("top_p", None)
+            _ = kwargs.pop("temperature", temperature)
+
+            mask_id = int(kwargs.pop("mask_id", getattr(self.config, "mask_token_id", 151666)))
+            eos_token_id = kwargs.pop("eos_token_id", None)
+            if eos_token_id is None and tokenizer is not None:
+                eos_token_id = getattr(tokenizer, "eos_token_id", None)
+            if eos_token_id is None:
+                eos_token_id = getattr(self.config, "eos_token_id", 151643)
+            text_vocab_size = len(tokenizer) if tokenizer is not None else None
+            config = coerce_vchd_config(
+                decode_config,
+                mask_id=mask_id,
+                eos_token_id=eos_token_id,
+                text_vocab_size=text_vocab_size,
+                forbidden_token_ids=(mask_id,),
+            )
+            visual_mask = infer_visual_mask_from_expanded_ids(expanded_ids[0])
+            if not bool(visual_mask.any()):
+                raise ValueError(
+                    "VCHD requires IMAGE_TOKEN_INDEX positions in the expanded prompt"
+                )
+
+            tokens = torch.full(
+                (1, prompt_len + int(max_new_tokens)),
+                mask_id,
+                dtype=torch.long,
+                device=inputs_embeds.device,
+            )
+            tokens[:, :prompt_len] = expanded_ids.to(device=tokens.device)
+            adapter = LaViDaVisualAccessAdapter(
+                self,
+                prompt_embeds=inputs_embeds,
+                visual_mask=visual_mask,
+                decode_start=prompt_len,
+                decode_end=prompt_len + int(max_new_tokens),
+                mask_id=mask_id,
+                attention_mask=attention_mask,
+                force_math_sdpa=config.force_math_sdpa,
+                backend="dream",
+            )
+            result = visual_contrast_decode(
+                self,
+                tokens,
+                decode_start=prompt_len,
+                decode_end=prompt_len + int(max_new_tokens),
+                visual_mask=visual_mask,
+                config=config,
+                attention_mask=attention_mask,
+                adapter=adapter,
+            )
+            if config.return_report:
+                output_tokens, report = result
+                self._last_vchd_report = report
+            else:
+                output_tokens = result
+                self._last_vchd_report = None
+
+            @dataclass
+            class _VCHDGenerateOutput:
+                sequences: torch.LongTensor
+
+            return _VCHDGenerateOutput(sequences=output_tokens[:, prompt_len:])
 
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)

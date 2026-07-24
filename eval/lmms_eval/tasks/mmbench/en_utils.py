@@ -40,6 +40,11 @@ def mmbench_doc_to_visual(doc):
     return [doc["image"].convert("RGB")]
 
 
+def _mmbench_l2_category(doc):
+    # MMBench uses "L2-category"; MMBench_EN uses "l2-category".
+    return doc.get("L2-category", doc.get("l2-category"))
+
+
 def mmbench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
     option_candidate = ["A", "B", "C", "D", "E"]
     options_prompt, options_dict = mmbench_evaluator.create_options_prompt(doc, option_candidate)
@@ -50,7 +55,7 @@ def mmbench_doc_to_text(doc, lmms_eval_specific_kwargs=None):
         "answer": doc.get("answer", None),
         "options": options_prompt,
         "category": doc["category"],
-        "L2-category": doc["L2-category"],
+        "L2-category": _mmbench_l2_category(doc),
         "options_dict": options_dict,
         "index": doc["index"],
         "hint": doc["hint"],
@@ -78,7 +83,7 @@ def mmbench_process_results(doc, results):
             "source": doc["source"],
             "split": doc["split"],
             "category": doc["category"],
-            "L2-category": doc["L2-category"],
+            "L2-category": _mmbench_l2_category(doc),
         },
         "submission": {
             "index": doc["index"],
@@ -89,7 +94,7 @@ def mmbench_process_results(doc, results):
             "source": doc["source"],
             "split": doc["split"],
             "category": doc["category"],
-            "L2-category": doc["L2-category"],
+            "L2-category": _mmbench_l2_category(doc),
         },
     }
     option_candidate = ["A", "B", "C", "D", "E"]

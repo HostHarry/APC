@@ -614,12 +614,15 @@ class Llava_Dream(lmms):
                 gen_kwargs['schedule_kwargs'] = schedule_kwargs
             try:
                 with torch.inference_mode():
-                    cont = self.model.generate(input_ids, 
-                                               attention_mask=attention_masks, 
-                                               pad_token_id=pad_token_ids,
-                                               images=image_tensor, 
-                                               use_cache=self.use_cache,
-                                               **gen_kwargs).sequences
+                    cont = self.model.generate(
+                        input_ids,
+                        attention_mask=attention_masks,
+                        pad_token_id=pad_token_ids,
+                        images=image_tensor,
+                        use_cache=self.use_cache,
+                        tokenizer=self.tokenizer,
+                        **gen_kwargs,
+                    ).sequences
                     # cont = self.model.generate(qwen_input_ids, pad_token_id=pad_token_ids, images=image_tensor, use_cache=self.use_cache, **gen_kwargs)
 
                 text_outputs = self.tokenizer.batch_decode(cont, skip_special_tokens=True)

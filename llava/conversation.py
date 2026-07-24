@@ -476,6 +476,22 @@ You are a helpful assistant.""",
 #     sep_style=SeparatorStyle.CHATML,
 #     sep="<|im_end|>",
 # )
+def _resolve_dream_tokenizer_path() -> str:
+    candidates = [
+        os.environ.get("LAVIDA_DREAM_TOKENIZER"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "lavida-ckpts", "lavida-dream-hd"),
+        "/autodl-fs/data/lavida-ckpts/lavida-dream-hd",
+        "Dream-org/Dream-v0-Instruct-7B",
+    ]
+    for path in candidates:
+        if not path:
+            continue
+        if path.startswith("Dream-org/") or os.path.exists(path):
+            return path
+    return "Dream-org/Dream-v0-Instruct-7B"
+
+
+_DREAM_TOKENIZER_PATH = _resolve_dream_tokenizer_path()
 conv_dream = Conversation(
     system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
     roles=("user", "assistant"),
@@ -484,8 +500,8 @@ conv_dream = Conversation(
     offset=0,
     sep="<|im_end|>",
     sep_style=SeparatorStyle.LLAMA_3,
-    tokenizer_id="Dream-org/Dream-v0-Instruct-7B",
-    tokenizer=AutoTokenizer.from_pretrained("Dream-org/Dream-v0-Instruct-7B",trust_remote_code=True),
+    tokenizer_id=_DREAM_TOKENIZER_PATH,
+    tokenizer=AutoTokenizer.from_pretrained(_DREAM_TOKENIZER_PATH, trust_remote_code=True),
     stop_token_ids=[151643],
 )
 

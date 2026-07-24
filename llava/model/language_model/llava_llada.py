@@ -272,11 +272,133 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
         modalities: Optional[List[str]] = ["image"],
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
+        from llava.decoding.generate_utils import coerce_vchd_config, extract_decode_options
+        from llava.decoding import (
+            LaViDaVisualAccessAdapter,
+            infer_visual_mask_from_expanded_ids,
+            visual_contrast_decode,
+        )
+
         modalities = kwargs.pop("modalities", None) if "modalities" in kwargs and modalities is None else modalities
         position_ids = kwargs.pop("position_ids", None)
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
+
+        decode_strategy, decode_config = extract_decode_options(kwargs)
+        tokenizer = kwargs.pop("tokenizer", None)
+
+        if decode_strategy in ("vchd", "vchd_fixed"):
+            if images is None:
+                raise ValueError("VCHD decoding requires visual inputs")
+            if kwargs.get("prefix_lm", False):
+                raise ValueError("VCHD decoding does not support prefix_lm=True")
+            if float(kwargs.get("cfg_scale", 0.0) or 0.0) > 0.0:
+                raise ValueError("VCHD decoding does not support cfg_scale > 0")
+            if inputs is not None and inputs.shape[0] != 1:
+                raise ValueError("VCHD decoding supports batch_size=1 only")
+
+            (
+                _input_ids,
+                position_ids,
+                attention_mask,
+                _past,
+                inputs_embeds,
+                _labels,
+                expanded_ids,
+            ) = self.prepare_inputs_labels_for_multimodal(
+                inputs,
+                position_ids,
+                attention_mask,
+                None,
+                None,
+                images,
+                modalities,
+                image_sizes=image_sizes,
+                return_inputs=True,
+            )
+            prompt_len = int(inputs_embeds.shape[1])
+            max_new_tokens = int(kwargs.pop("max_new_tokens", 128))
+            kwargs.pop("block_length", None)
+            kwargs.pop("step_per_block", None)
+            kwargs.pop("step_ratio", None)
+            kwargs.pop("steps", None)
+            kwargs.pop("schedule", None)
+            kwargs.pop("schedule_kwargs", None)
+            kwargs.pop("remasking", None)
+            kwargs.pop("prefix_lm", None)
+            kwargs.pop("draft_tokens", None)
+            kwargs.pop("verbose", None)
+            kwargs.pop("do_sample", None)
+            kwargs.pop("top_p", None)
+            kwargs.pop("num_beams", None)
+            kwargs.pop("pad_token_id", None)
+            kwargs.pop("use_cache", None)
+            kwargs.pop("stopping_criteria", None)
+            temperature = float(kwargs.pop("temperature", 0.0) or 0.0)
+            if temperature != 0.0:
+                # VCHD commit path is greedy over contrast scores; keep API tolerant.
+                pass
+
+            mask_id = int(kwargs.pop("mask_id", 126336))
+            eos_token_id = kwargs.pop("eos_token_id", None)
+            if eos_token_id is None and tokenizer is not None:
+                eos_token_id = getattr(tokenizer, "eos_token_id", None)
+            if eos_token_id is None:
+                eos_token_id = 126081
+            text_vocab_size = None
+            if tokenizer is not None:
+                text_vocab_size = len(tokenizer)
+            config = coerce_vchd_config(
+                decode_config,
+                mask_id=mask_id,
+                eos_token_id=eos_token_id,
+                text_vocab_size=text_vocab_size,
+                forbidden_token_ids=(mask_id,),
+            )
+
+            visual_mask = infer_visual_mask_from_expanded_ids(expanded_ids[0])
+            if not bool(visual_mask.any()):
+                raise ValueError(
+                    "VCHD requires IMAGE_TOKEN_INDEX positions in the expanded prompt"
+                )
+
+            tokens = torch.full(
+                (1, prompt_len + max_new_tokens),
+                mask_id,
+                dtype=torch.long,
+                device=inputs_embeds.device,
+            )
+            tokens[:, :prompt_len] = expanded_ids.to(device=tokens.device)
+
+            adapter = LaViDaVisualAccessAdapter(
+                self.get_model(),
+                prompt_embeds=inputs_embeds,
+                visual_mask=visual_mask,
+                decode_start=prompt_len,
+                decode_end=prompt_len + max_new_tokens,
+                mask_id=mask_id,
+                attention_mask=attention_mask,
+                force_math_sdpa=config.force_math_sdpa,
+                backend="llada",
+            )
+            result = visual_contrast_decode(
+                self.get_model(),
+                tokens,
+                decode_start=prompt_len,
+                decode_end=prompt_len + max_new_tokens,
+                visual_mask=visual_mask,
+                config=config,
+                attention_mask=attention_mask,
+                adapter=adapter,
+            )
+            if config.return_report:
+                output_tokens, report = result
+                self._last_vchd_report = report
+            else:
+                output_tokens = result
+                self._last_vchd_report = None
+            return output_tokens[:, prompt_len:]
 
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)

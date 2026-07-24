@@ -1,0 +1,39 @@
+task: "vlind_bench_full"
+dataset_path: csv
+dataset_kwargs:
+  data_files:
+    test: /root/autodl-tmp/MMaDA_DCD_cloud_bundle_20260711/MMaDA/evaluation/VLMEvalKit/LMUData/VLind-Bench.tsv
+  delimiter: "\t"
+test_split: test
+output_type: generate_until
+doc_to_visual: !function utils.vlind_doc_to_visual
+doc_to_text: !function utils.vlind_doc_to_text
+doc_to_target: !function utils.vlind_doc_to_target
+process_results: !function utils.vlind_process_results
+metric_list:
+  - metric: vlind_query_acc
+    aggregation: !function utils.vlind_aggregate_query_acc
+    higher_is_better: true
+  - metric: vlind_ck_acc
+    aggregation: !function utils.vlind_aggregate_ck_acc
+    higher_is_better: true
+  - metric: vlind_vp_acc
+    aggregation: !function utils.vlind_aggregate_vp_acc
+    higher_is_better: true
+  - metric: vlind_cb_acc
+    aggregation: !function utils.vlind_aggregate_cb_acc
+    higher_is_better: true
+  - metric: vlind_lp_raw_macro
+    aggregation: !function utils.vlind_aggregate_lp_raw_macro
+    higher_is_better: true
+  - metric: vlind_lp_acc
+    aggregation: !function utils.vlind_aggregate_lp_acc
+    higher_is_better: true
+generation_kwargs:
+  max_new_tokens: 16
+  temperature: 0
+  top_p: 1.0
+  num_beams: 1
+  do_sample: false
+metadata:
+  version: 1.0

@@ -1,3 +1,9 @@
+# 43133-lavida
+
+Local LaViDa Thinking Diffusion (SWD / PSP / PSP+VRG) snapshot from the autodl workspace.
+Code lives under `LaViDa/` (weights and eval logs are not uploaded).
+Includes the Prefix-LM `attention_bias` safeguard in `modeling_llada.py`.
+
 # APC: MMaDA decoding experiments on VLind-Bench
 
 This branch contains the code that is actually executed by the current

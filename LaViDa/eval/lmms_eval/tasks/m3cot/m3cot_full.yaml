@@ -1,0 +1,25 @@
+task: "m3cot_full"
+# Local HF snapshot: `LightChen2333/M3CoT` fails under HF_HUB_OFFLINE=1 even
+# when the hub cache exists (no auto fallback like lmms-lab datasets).
+dataset_path: LightChen2333/M3CoT
+test_split: test
+output_type: generate_until
+doc_to_visual: !function utils.m3cot_doc_to_visual
+doc_to_text: !function utils.m3cot_doc_to_text
+doc_to_target: "answer"
+process_results: !function utils.m3cot_process_results
+metric_list:
+  - metric: m3cot_accuracy
+    aggregation: mean
+    higher_is_better: true
+lmms_eval_specific_kwargs:
+  default:
+    prompt_mode: cot
+generation_kwargs:
+  max_new_tokens: 64
+  temperature: 0
+  top_p: 1.0
+  num_beams: 1
+  do_sample: false
+metadata:
+  version: 1.0

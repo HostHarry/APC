@@ -5,6 +5,7 @@
 !/README.md
 !/MMaDA_DCD_cloud_bundle_20260711/
 !/VLind-Bench/
+!/LaViDa/
 
 # Keep the authoritative MMaDA tree, not bundle-side artifacts.
 /MMaDA_DCD_cloud_bundle_20260711/*
@@ -66,3 +67,10 @@
 *.zip
 *.tar
 *.tar.gz
+
+# LaViDa: keep source/eval glue; drop weights and local run artifacts.
+/LaViDa/lavida-ckpts/
+/LaViDa/eval/logs/
+/LaViDa/images/
+/LaViDa/**/__pycache__/
+/LaViDa/**/.cache/

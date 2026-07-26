@@ -1,0 +1,4 @@
+group: mmmu_dev_val_full
+task:
+  - mmmu_dev
+  - mmmu_val

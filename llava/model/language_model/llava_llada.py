@@ -287,12 +287,11 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
 
         decode_strategy, decode_config = extract_decode_options(kwargs)
         tokenizer = kwargs.pop("tokenizer", None)
+        prefix_lm = bool(kwargs.get("prefix_lm", False))
 
         if decode_strategy in ("vchd", "vchd_fixed"):
             if images is None:
                 raise ValueError("VCHD decoding requires visual inputs")
-            if kwargs.get("prefix_lm", False):
-                raise ValueError("VCHD decoding does not support prefix_lm=True")
             if float(kwargs.get("cfg_scale", 0.0) or 0.0) > 0.0:
                 raise ValueError("VCHD decoding does not support cfg_scale > 0")
             if inputs is not None and inputs.shape[0] != 1:
@@ -356,6 +355,10 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 text_vocab_size=text_vocab_size,
                 forbidden_token_ids=(mask_id,),
             )
+            if config.prefix_prompt_cache and not prefix_lm:
+                raise ValueError(
+                    "VCHD paired prompt cache requires prefix_lm=True"
+                )
 
             visual_mask = infer_visual_mask_from_expanded_ids(expanded_ids[0])
             if not bool(visual_mask.any()):
@@ -381,6 +384,8 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 attention_mask=attention_mask,
                 force_math_sdpa=config.force_math_sdpa,
                 backend="llada",
+                prefix_lm=prefix_lm,
+                prefix_prompt_cache=config.prefix_prompt_cache,
             )
             result = visual_contrast_decode(
                 self.get_model(),

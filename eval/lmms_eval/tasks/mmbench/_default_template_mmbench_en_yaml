@@ -1,6 +1,6 @@
 dataset_path: lmms-lab/MMBench
 dataset_kwargs:
-  token: True
+  token: false
 doc_to_target: "answer"
 lmms_eval_specific_kwargs:
   default:

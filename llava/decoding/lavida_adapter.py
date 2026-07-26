@@ -63,6 +63,30 @@ def build_paired_attention_bias_from_mask(
     return bias
 
 
+def build_paired_prefix_attention_bias(
+    visual_mask: torch.BoolTensor,
+    *,
+    prompt_length: int,
+) -> torch.FloatTensor:
+    """Build visual/ablated Prefix-LM bias with causal response queries."""
+
+    seq_len = int(visual_mask.numel())
+    prompt_length = int(prompt_length)
+    if not 0 < prompt_length <= seq_len:
+        raise ValueError(
+            f"prompt_length must be in [1, {seq_len}], got {prompt_length}"
+        )
+    bias = build_paired_attention_bias_from_mask(visual_mask)
+    positions = torch.arange(seq_len, device=visual_mask.device)
+    query = positions[:, None]
+    key = positions[None, :]
+    blocked = ((query < prompt_length) & (key >= prompt_length)) | (
+        (query >= prompt_length) & (key > query)
+    )
+    bias[:, 0].masked_fill_(blocked, torch.finfo(torch.float32).min)
+    return bias
+
+
 def infer_visual_mask_from_expanded_ids(
     expanded_ids: torch.LongTensor,
 ) -> torch.BoolTensor:
@@ -319,6 +343,8 @@ class LaViDaVisualAccessAdapter:
         attention_mask: Optional[torch.Tensor] = None,
         force_math_sdpa: bool = True,
         backend: str = "llada",
+        prefix_lm: bool = False,
+        prefix_prompt_cache: bool = False,
     ) -> None:
         if prompt_embeds.ndim != 3 or prompt_embeds.shape[0] != 1:
             raise ValueError(
@@ -341,6 +367,14 @@ class LaViDaVisualAccessAdapter:
             )
         if backend not in {"llada", "dream"}:
             raise ValueError(f"Unknown backend {backend!r}")
+        if prefix_prompt_cache and not prefix_lm:
+            raise ValueError(
+                "prefix_prompt_cache=True requires prefix_lm=True"
+            )
+        if prefix_prompt_cache and backend != "llada":
+            raise ValueError(
+                "Paired Prefix-LM prompt cache currently supports backend='llada' only"
+            )
         self.model = model
         self.prompt_embeds = prompt_embeds
         self.visual_mask = visual_mask.bool().clone()
@@ -350,6 +384,12 @@ class LaViDaVisualAccessAdapter:
         self.attention_mask = attention_mask
         self.force_math_sdpa = bool(force_math_sdpa)
         self.backend = backend
+        self.prefix_lm = bool(prefix_lm)
+        self.prefix_prompt_cache = bool(prefix_prompt_cache)
+        self._prompt_cache: Optional[
+            Sequence[Tuple[torch.Tensor, torch.Tensor]]
+        ] = None
+        self._prompt_cache_prefills = 0
         self._model_forward_calls = 0
         self._branch_evaluations = 0
         self._logical_query_tokens = 0
@@ -371,6 +411,11 @@ class LaViDaVisualAccessAdapter:
             "cache_visual_context_version": None,
             "cache_ablated_context_version": None,
             "cache_last_full_refresh_version": None,
+            "prefix_lm": self.prefix_lm,
+            "prompt_cache_type": (
+                "paired_prefix" if self.prefix_prompt_cache else "none"
+            ),
+            "prompt_cache_prefills": self._prompt_cache_prefills,
         }
 
     def _embed_tokens(self, token_ids: torch.LongTensor) -> torch.FloatTensor:
@@ -395,6 +440,12 @@ class LaViDaVisualAccessAdapter:
         inputs_embeds: torch.FloatTensor,
         attention_bias: torch.Tensor,
         attention_mask: Optional[torch.Tensor],
+        *,
+        past_key_values: Optional[
+            Sequence[Tuple[torch.Tensor, torch.Tensor]]
+        ] = None,
+        use_cache: bool = False,
+        last_logits_only: bool = False,
     ):
         pair_embeds = inputs_embeds.repeat(2, 1, 1)
         pair_mask = (
@@ -402,12 +453,20 @@ class LaViDaVisualAccessAdapter:
         )
         with torch.inference_mode(), _math_sdpa_context(self.force_math_sdpa):
             if self.backend == "llada":
-                return self.model(
-                    None,
-                    input_embeddings=pair_embeds,
-                    attention_mask=pair_mask,
-                    attention_bias=attention_bias,
-                    use_cache=False,
+                forward_kwargs = {
+                    "input_embeddings": pair_embeds,
+                    "attention_mask": pair_mask,
+                    "attention_bias": attention_bias,
+                    "use_cache": use_cache,
+                }
+                if past_key_values is not None:
+                    forward_kwargs["past_key_values"] = past_key_values
+                if last_logits_only:
+                    forward_kwargs["last_logits_only"] = True
+                return self.model(None, **forward_kwargs)
+            if past_key_values is not None or use_cache:
+                raise ValueError(
+                    "Paired Prefix-LM prompt cache is not implemented for Dream"
                 )
             # Dream SDPA requires attn bias dtype to match query/value dtype
             # (typically bf16). float32 bias raises "invalid dtype for bias" on CUDA.
@@ -429,6 +488,50 @@ class LaViDaVisualAccessAdapter:
                 attention_mask=dream_bias,
                 use_cache=False,
             )
+
+    def _prefill_prompt_cache(self) -> None:
+        if self._prompt_cache is not None:
+            return
+        prompt_len = int(self.prompt_embeds.shape[1])
+        prompt_bias = build_paired_attention_bias_from_mask(
+            self.visual_mask.to(device=self.prompt_embeds.device)
+        )
+        prompt_attention_mask = _normalize_attention_mask(
+            self.attention_mask,
+            seq_len=prompt_len,
+            device=self.prompt_embeds.device,
+        )
+        output = self._forward_pair(
+            self.prompt_embeds,
+            prompt_bias,
+            prompt_attention_mask,
+            use_cache=True,
+            last_logits_only=True,
+        )
+        cache = getattr(output, "attn_key_values", None)
+        if not cache:
+            raise RuntimeError(
+                "LLaDA Prefix-LM prefill did not return attn_key_values"
+            )
+        for layer_index, layer_cache in enumerate(cache):
+            if len(layer_cache) != 2:
+                raise RuntimeError(
+                    f"Prompt cache layer {layer_index} is not a (key, value) pair"
+                )
+            key, value = layer_cache
+            if key.shape[0] != 2 or value.shape[0] != 2:
+                raise RuntimeError(
+                    "Paired prompt cache must preserve batch dimension 2"
+                )
+            if key.shape[-2] != prompt_len or value.shape[-2] != prompt_len:
+                raise RuntimeError(
+                    "Paired prompt cache length does not match prompt length"
+                )
+        self._prompt_cache = tuple(cache)
+        self._prompt_cache_prefills += 1
+        self._model_forward_calls += 1
+        self._branch_evaluations += 2
+        self._logical_query_tokens += 2 * prompt_len
 
     def paired_forward(
         self,
@@ -454,18 +557,57 @@ class LaViDaVisualAccessAdapter:
 
         response_ids = tokens[:, self.decode_start : self.decode_end]
         response_embeds = self._embed_tokens(response_ids)
-        inputs_embeds = torch.cat([self.prompt_embeds, response_embeds], dim=1)
 
         full_visual_mask = torch.zeros(
             seq_len, dtype=torch.bool, device=tokens.device
         )
         full_visual_mask[:prompt_len] = self.visual_mask.to(device=tokens.device)
-        branch_bias = build_paired_attention_bias_from_mask(full_visual_mask)
+        branch_bias = (
+            build_paired_prefix_attention_bias(
+                full_visual_mask,
+                prompt_length=prompt_len,
+            )
+            if self.prefix_lm
+            else build_paired_attention_bias_from_mask(full_visual_mask)
+        )
         single_attention_mask = _normalize_attention_mask(
             self.attention_mask,
             seq_len=seq_len,
             device=tokens.device,
         )
+
+        if self.prefix_prompt_cache:
+            prefilled = self._prompt_cache is None
+            self._prefill_prompt_cache()
+            output = self._forward_pair(
+                response_embeds,
+                branch_bias,
+                single_attention_mask,
+                past_key_values=self._prompt_cache,
+            )
+            logits = output.logits
+            response_len = self.decode_end - self.decode_start
+            if logits.shape[0] != 2 or logits.shape[1] != response_len:
+                raise RuntimeError(
+                    "Unexpected cached paired logits shape: "
+                    f"{tuple(logits.shape)} for response length {response_len}"
+                )
+            visual, ablated = logits.chunk(2, dim=0)
+            self._model_forward_calls += 1
+            self._branch_evaluations += 2
+            self._logical_query_tokens += 2 * response_len
+            return PairedLogits(
+                visual=visual[0].float().clone(),
+                ablated=ablated[0].float().clone(),
+                cache_event=(
+                    "prompt_prefill" if prefilled else "prompt_reuse"
+                ),
+                query_start=self.decode_start,
+                query_tokens=response_len,
+                model_forward_calls=2 if prefilled else 1,
+            )
+
+        inputs_embeds = torch.cat([self.prompt_embeds, response_embeds], dim=1)
         output = self._forward_pair(
             inputs_embeds, branch_bias, single_attention_mask
         )
@@ -482,7 +624,9 @@ class LaViDaVisualAccessAdapter:
         return PairedLogits(
             visual=visual[0, self.decode_start : self.decode_end].float().clone(),
             ablated=ablated[0, self.decode_start : self.decode_end].float().clone(),
-            cache_event="disabled",
+            cache_event=(
+                "prefix_no_cache" if self.prefix_lm else "disabled"
+            ),
             query_start=0,
             query_tokens=seq_len,
             model_forward_calls=1,

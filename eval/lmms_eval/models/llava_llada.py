@@ -128,7 +128,10 @@ class Llava_Llada(lmms):
         overwrite_config = {}
         overwrite_config["mm_spatial_pool_stride"] = self.mm_spatial_pool_stride
         overwrite_config["mm_spatial_pool_mode"] = self.mm_spatial_pool_mode
-        cfg_pretrained = AutoConfig.from_pretrained(self.pretrained)
+        cfg_pretrained = AutoConfig.from_pretrained(
+            self.pretrained,
+            trust_remote_code=True,
+        )
 
         llava_model_args["overwrite_config"] = overwrite_config
         # try:

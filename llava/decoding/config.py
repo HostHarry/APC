@@ -65,6 +65,7 @@ class VCHDDecodeConfig:
     cache_refresh_interval: int = 8
     cache_refresh_on_pressure: bool = True
     cache_pressure_threshold: float = 0.60
+    prefix_prompt_cache: bool = False
     truncate_at_eos: bool = True
     collect_trace: bool = False
     return_report: bool = False

@@ -413,6 +413,11 @@ class LlavaDreamForMaskedDiffusion(DreamModel,LlavaMetaForCausalLM):
                 text_vocab_size=text_vocab_size,
                 forbidden_token_ids=(mask_id,),
             )
+            if config.prefix_prompt_cache:
+                raise ValueError(
+                    "VCHD paired Prefix-LM prompt cache currently supports "
+                    "LaViDa-LLaDA only"
+                )
             visual_mask = infer_visual_mask_from_expanded_ids(expanded_ids[0])
             if not bool(visual_mask.any()):
                 raise ValueError(

@@ -661,14 +661,15 @@ class LLaDABlock(nn.Module):
                 k = k.repeat_interleave(num_q_heads // num_kv_heads, dim=1, output_size=num_q_heads)
                 v = v.repeat_interleave(num_q_heads // num_kv_heads, dim=1, output_size=num_q_heads)
 
-            # Modify: MDM set causal to False, and with no attn_mask.
+            # MDM attention is non-causal by default, but callers may provide a
+            # dense additive mask for Prefix-LM or paired visual ablation.
             return F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
-                attn_mask=None,
+                attn_mask=attn_mask,
                 dropout_p=dropout_p,
-                is_causal=False,
+                is_causal=is_causal,
             )
     def _flex_attention(
         self,
@@ -763,7 +764,7 @@ class LLaDABlock(nn.Module):
                 q,
                 k,
                 v,
-                attn_mask=None,
+                attn_mask=attention_bias,
                 dropout_p=0.0 if not self.training else self.config.attention_dropout,
                 is_causal=False,
             )

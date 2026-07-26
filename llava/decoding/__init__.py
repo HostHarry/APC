@@ -16,6 +16,7 @@ from .lavida_adapter import (
     TokenVisualAccessAdapter,
     build_paired_attention_bias,
     build_paired_attention_bias_from_mask,
+    build_paired_prefix_attention_bias,
     infer_visual_mask_from_expanded_ids,
 )
 from .vocabulary import build_valid_text_vocab
@@ -42,6 +43,7 @@ __all__ = [
     "WindowPressure",
     "build_paired_attention_bias",
     "build_paired_attention_bias_from_mask",
+    "build_paired_prefix_attention_bias",
     "build_valid_text_vocab",
     "compute_contrast_stats",
     "compute_window_pressure",

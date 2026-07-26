@@ -6,6 +6,26 @@ DEFAULT_KWARGS = {
 }
 
 DATASET_CONFIGS = {
+    "M3CoT": {
+        "max_new_tokens": 512,
+        "steps": 256,
+        "block_length": 64,
+    },
+    "M3CoT_COT": {
+        "max_new_tokens": 512,
+        "steps": 256,
+        "block_length": 64,
+    },
+    "M3CoT_DIRECT": {
+        "max_new_tokens": 64,
+        "steps": 64,
+        "block_length": 32,
+    },
+    "CHAIR": {
+        "max_new_tokens": 128,
+        "steps": 128,
+        "block_length": 64,
+    },
     "MathVista_MINI": {
         "max_new_tokens": 96,
         "steps": 96,
@@ -28,11 +48,6 @@ DATASET_CONFIGS = {
         "steps": 128,
         "block_length": 64,
     },
-    "MMBench_DEV_EN_2C": {
-        "max_new_tokens": 128,
-        "steps": 128,
-        "block_length": 64,
-    },
     "MathVision": {
         "max_new_tokens": 512,
         "steps": 256,
@@ -47,6 +62,11 @@ DATASET_CONFIGS = {
         "max_new_tokens": 256,
         "steps": 128,
         "block_length": 256,
+    },
+    "VLind-Bench": {
+        "max_new_tokens": 16,
+        "steps": 16,
+        "block_length": 16,
     },
     "ScienceQA_VAL": {
         "max_new_tokens": 256,

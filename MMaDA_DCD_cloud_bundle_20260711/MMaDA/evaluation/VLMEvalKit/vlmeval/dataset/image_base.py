@@ -12,14 +12,23 @@ def img_root_map(dataset):
         return 'OCRVQA'
     if 'COCO_VAL' == dataset:
         return 'COCO'
+    if dataset == 'MMMU_DEV_VAL_FULL':
+        # The locally converted 1050-row full split has a different numeric
+        # index-to-image mapping from the historical shuffled MMMU subsets.
+        # Sharing the generic ``MMMU`` cache silently pairs questions with
+        # stale images because dump_image() reuses any readable <index>.jpg.
+        return 'MMMU_DEV_VAL_FULL'
     if 'MMMU' in dataset:
         return 'MMMU'
     if "QSpatial" in dataset:
         return "QSpatial"
+    if dataset in ('VLind-Bench', 'VLind'):
+        return 'VLind-Bench'
+    if dataset in ('M3CoT', 'M3CoT_COT', 'M3CoT_DIRECT'):
+        return 'M3CoT'
 
     mmbench_root_map = {
-        'MMBench_DEV_EN': 'MMBench', 'MMBench_DEV_EN_2C': 'MMBench',
-        'MMBench_TEST_EN': 'MMBench',
+        'MMBench_DEV_EN': 'MMBench', 'MMBench_TEST_EN': 'MMBench',
         'MMBench_DEV_CN': 'MMBench', 'MMBench_TEST_CN': 'MMBench',
         'MMBench': 'MMBench', 'MMBench_CN': 'MMBench',
         'MMBench_DEV_EN_V11': 'MMBench_V11', 'MMBench_TEST_EN_V11': 'MMBench_V11',

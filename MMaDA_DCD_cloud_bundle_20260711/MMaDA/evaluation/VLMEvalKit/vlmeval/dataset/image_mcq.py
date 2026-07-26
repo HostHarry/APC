@@ -45,8 +45,6 @@ class ImageMCQDataset(ImageBaseDataset):
     DATASET_URL = {
         # MMBench v1.0
         'MMBench_DEV_EN': 'https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_DEV_EN.tsv',
-        # Local two-cycle variant: original options + one right rotation.
-        'MMBench_DEV_EN_2C': 'https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_DEV_EN.tsv',
         'MMBench_TEST_EN': 'https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_TEST_EN.tsv',
         'MMBench_DEV_CN': 'https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_DEV_CN.tsv',
         'MMBench_TEST_CN': 'https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_TEST_CN.tsv',
@@ -404,6 +402,179 @@ class MMMUDataset(ImageMCQDataset):
         msgs = super().build_prompt(line)
         msgs = self.split_MMMU(msgs)
         return msgs
+
+
+class MMMUFullDataset(MMMUDataset):
+    """MMMU with full paper-aligned coverage (1050 samples).
+
+    Locally converted TSV built by ``scripts/hf_to_vlmeval_tsv.py --dataset
+    MMMU_DEV_VAL_FULL`` from the official ``MMMU/MMMU`` HuggingFace parquets.
+    Covers:
+
+      * both ``dev`` (150) and ``validation`` (900) splits, total 1050
+      * both ``multiple-choice`` (988) and ``open`` (62) question types
+      * every option count (2, 3, 4, 5, 6, 7, 9) via A..I columns
+      * multi-image samples (47) via grid-concatenation into one canvas -
+        no first-image-only fallback
+
+    Scoring dispatches on ``question_type``:
+      * MC rows -> existing ``mcq_vanilla_eval`` letter-match
+      * open rows -> ported MMMU ``parse_open_response`` + ``eval_open``
+    """
+
+    TYPE = 'MCQ'
+
+    DATASET_URL = {
+        'MMMU_DEV_VAL_FULL':
+        'https://opencompass.openxlab.space/utils/VLMEval/MMMU_DEV_VAL_FULL.tsv',
+    }
+    # MD5 skipped: locally converted TSV via ``scripts/hf_to_vlmeval_tsv.py
+    # --dataset MMMU_DEV_VAL_FULL``. Live download from opencompass.openxlab.space
+    # is unreachable from this sandbox and the on-disk copy is our source of truth.
+    DATASET_MD5: dict = {}
+
+    def build_prompt(self, line):
+        """Route MC / open to different prompt templates so scoring is stable.
+
+        MC path is identical to ``MMMUDataset.build_prompt`` (letter-answer
+        instruction inherited from ``ImageMCQDataset.build_prompt``).
+
+        Open path emits ``Question: ...`` + "Answer with a short phrase or
+        number, no explanation" (matches the official MMMU eval prompt).
+        """
+        if isinstance(line, int):
+            line = self.data.iloc[line]
+
+        qtype = str(line.get('question_type', 'multiple-choice'))
+        if qtype != 'open':
+            return super().build_prompt(line)
+
+        if self.meta_only:
+            tgt_path = toliststr(line['image_path'])
+        else:
+            tgt_path = self.dump_image(line)
+
+        question = str(line['question'])
+        prompt = (
+            f'Question: {question}\n'
+            'Answer the question using a single word or phrase.'
+        )
+        msgs = (
+            [dict(type='image', value=p) for p in tgt_path]
+            if isinstance(tgt_path, list)
+            else [dict(type='image', value=tgt_path)]
+        )
+        msgs.append(dict(type='text', value=prompt))
+        msgs = self.split_MMMU(msgs)
+        return msgs
+
+    def evaluate(self, eval_file, **judge_kwargs):
+        """Split predictions by ``question_type`` and score each half.
+
+        Emits a small dict + writes ``*_acc.csv`` with an overall / MC / open
+        / per-split / per-category breakdown so downstream diff-tools can
+        compare configs.
+        """
+        from .utils.multiple_choice import mcq_vanilla_eval, report_acc
+        from .utils.mmmu_open import score_open_row
+
+        suffix = eval_file.split('.')[-1]
+        data = load(eval_file)
+        data['index'] = [int(x) for x in data['index']]
+        data['prediction'] = [str(x) for x in data['prediction']]
+
+        meta = self.data.copy()
+        meta['index'] = [int(x) for x in meta['index']]
+        # Ensure downstream mcq_vanilla_eval sees the same option columns and
+        # answer column that would come from a normal MMMU eval.
+        for k in data.keys():
+            data[k.lower() if k not in list(string.ascii_uppercase) else k] = data.pop(k)
+
+        # Attach question_type / split / category from meta. If ``data``
+        # already carries any of these columns (e.g. merged prediction xlsx
+        # where some rows came from an older run without ``question_type``
+        # populated), drop them first so the TSV meta is the sole source of
+        # truth. Otherwise a partial NaN column would silently route MC
+        # samples to the open scorer.
+        aux_cols = ['question_type', 'category', 'split', 'n_options', 'n_images']
+        data = data.drop(columns=[c for c in aux_cols if c in data.columns])
+        aux = meta[['index'] + [c for c in aux_cols if c in meta.columns]]
+        data = data.merge(aux, on='index', how='left')
+
+        # --- MC path: reuse standard letter-match ------------------------------
+        mc_mask = data['question_type'] == 'multiple-choice'
+        mc = data[mc_mask].reset_index(drop=True).copy()
+        mc_hit_col = None
+        if len(mc):
+            mc_meta = meta[meta['question_type'] == 'multiple-choice']
+            result_file = eval_file.replace(
+                f'.{suffix}', f'_mmmufull_mc_result.pkl'
+            )
+            nproc = judge_kwargs.pop('nproc', 4)
+            mc = mcq_vanilla_eval(
+                None, mc, mc_meta, nproc, result_file, 'MMMU_DEV_VAL_FULL'
+            )
+            # mcq_vanilla_eval sets 'hit' (0/1) after scoring.
+            mc_hit_col = 'hit'
+
+        # --- Open path: ported MMMU parse_open_response + eval_open -----------
+        op = data[~mc_mask].reset_index(drop=True).copy()
+        if len(op):
+            gold = op['answer'].astype(str).tolist()
+            pred = op['prediction'].astype(str).tolist()
+            op['hit'] = [
+                int(bool(score_open_row(g, p))) for g, p in zip(gold, pred)
+            ]
+
+        # --- Merge and report -------------------------------------------------
+        if len(mc) and len(op):
+            keep = [c for c in mc.columns if c in op.columns]
+            combined = pd.concat([mc[keep], op[keep]], ignore_index=True)
+        elif len(mc):
+            combined = mc
+        else:
+            combined = op
+
+        combined['hit'] = combined['hit'].astype(int)
+
+        eval_record = eval_file.replace(f'.{suffix}', f'_mmmufull_result.{suffix}')
+        dump(combined, eval_record)
+
+        # Human-readable acc report.
+        n_all = len(combined)
+        n_mc = int(mc_mask.sum())
+        n_op = n_all - n_mc
+        rows = [
+            {'split': 'overall', 'n': n_all,
+             'acc': float(combined['hit'].mean()) if n_all else float('nan')},
+            {'split': 'multiple-choice', 'n': n_mc,
+             'acc': float(combined[combined['question_type'] == 'multiple-choice']['hit'].mean())
+             if n_mc else float('nan')},
+            {'split': 'open', 'n': n_op,
+             'acc': float(combined[combined['question_type'] == 'open']['hit'].mean())
+             if n_op else float('nan')},
+        ]
+        # Per-split (dev / validation).
+        if 'split' in combined.columns:
+            for sp in ['dev', 'validation']:
+                sub = combined[combined['split'] == sp]
+                if len(sub):
+                    rows.append({
+                        'split': f'split={sp}', 'n': len(sub),
+                        'acc': float(sub['hit'].mean()),
+                    })
+        # Per-category (subfield) accuracy - single row per category, alpha-sorted.
+        if 'category' in combined.columns:
+            for cat, sub in combined.groupby('category'):
+                rows.append({
+                    'split': f'category={cat}', 'n': len(sub),
+                    'acc': float(sub['hit'].mean()),
+                })
+
+        acc = pd.DataFrame(rows)
+        score_file = eval_file.replace(f'.{suffix}', '_acc.csv')
+        dump(acc, score_file)
+        return acc
 
 
 class MMMUProDataset(MMMUDataset):

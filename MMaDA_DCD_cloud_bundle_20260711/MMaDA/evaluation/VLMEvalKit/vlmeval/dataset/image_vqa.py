@@ -1051,7 +1051,7 @@ class LLaVABench(ImageBaseDataset):
         'LLaVABench':
         'https://opencompass.openxlab.space/utils/VLMEval/LLaVABench.tsv'
     }
-    DATASET_MD5 = {'LLaVABench': 'd382a093f749a697820d3dadd61c8428'}
+    DATASET_MD5 = {}  # local HF-converted TSV; skip opencompass MD5
 
     # It returns a DataFrame
     @classmethod

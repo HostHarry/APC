@@ -4,9 +4,10 @@ from .image_base import img_root_map, ImageBaseDataset
 from .image_caption import ImageCaptionDataset, CHAIRDataset
 from .image_yorn import ImageYORNDataset
 from .image_mcq import (
-    ImageMCQDataset, MMMUDataset, CustomMCQDataset, MUIRDataset, GMAIMMBenchDataset, MMERealWorld, HRBenchDataset,
-    NaturalBenchDataset, WeMath, MMMUProDataset, VMCBenchDataset, MedXpertQA_MM_test, LEGO, VisuLogic, CVBench, TDBench,
-    MicroBench, OmniMedVQA, MSEarthMCQ, VLMBlind, SCAM, _3DSRBench, AffordanceDataset, OmniEarthMCQBench, XLRSBench
+    ImageMCQDataset, MMMUDataset, MMMUFullDataset, CustomMCQDataset, MUIRDataset, GMAIMMBenchDataset, MMERealWorld,
+    HRBenchDataset, NaturalBenchDataset, WeMath, MMMUProDataset, VMCBenchDataset, MedXpertQA_MM_test, LEGO, VisuLogic,
+    CVBench, TDBench, MicroBench, OmniMedVQA, MSEarthMCQ, VLMBlind, SCAM, _3DSRBench, AffordanceDataset,
+    OmniEarthMCQBench, XLRSBench
 )
 from .image_mt import MMDUDataset
 from .image_vqa import (
@@ -69,6 +70,8 @@ from .GUI.screenspot import ScreenSpot
 from .GUI.screenspot_pro import ScreenSpot_Pro
 from .mmifeval import MMIFEval
 from .chartmimic import ChartMimic
+from .m3cot import M3CoTDataset
+from .vlind import VLindBenchDataset
 
 
 class ConcatDataset(ImageBaseDataset):
@@ -181,7 +184,7 @@ class ConcatDataset(ImageBaseDataset):
 # Add new supported dataset class here
 IMAGE_DATASET = [
     ImageCaptionDataset, CHAIRDataset, ImageYORNDataset, ImageMCQDataset, ImageVQADataset,
-    MathVision, MMMUDataset, OCRBench, MathVista, LLaVABench, VGRPBench, MMVet,
+    MathVision, MMMUDataset, MMMUFullDataset, OCRBench, MathVista, LLaVABench, VGRPBench, MMVet,
     MTVQADataset, TableVQABench, MMLongBench, VCRDataset, MMDUDataset, DUDE,
     SlideVQA, MUIRDataset, CCOCRDataset, GMAIMMBenchDataset, MMERealWorld,
     HRBenchDataset, CRPE, MathVerse, NaturalBenchDataset, MIABench,
@@ -195,7 +198,7 @@ IMAGE_DATASET = [
     WildDocBenchmark, MSEarthMCQ, OCR_Reasoning, PhyX, VLMBlind, CountBenchQA,
     ZEROBench, SCAM, Omni3DBench, TallyQA, _3DSRBench, AffordanceDataset,
     MMEReasoning, GOBenchDataset, SFE, ChartMimic, MMVMBench, XLRSBench, 
-    OmniEarthMCQBench
+    OmniEarthMCQBench, M3CoTDataset, VLindBenchDataset
 ]
 
 

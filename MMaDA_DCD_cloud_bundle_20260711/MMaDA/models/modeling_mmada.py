@@ -55,14 +55,6 @@ from decoding import (
     vchd_config_from_dict,
     visual_contrast_decode,
 )
-from decoding.mmada_adapter import build_paired_attention_bias
-from decoding.swd import SwdState, apply_swd_to_confidence, response_span_token_probs
-from decoding.thinking_diffusion import (
-    ThinkingSwdDecodeConfig,
-    apply_psp,
-    apply_vrg,
-    resolve_thinking_swd_config,
-)
 from .sampling import cosine_schedule, mask_by_random_topk
 from transformers import PretrainedConfig
 
@@ -109,63 +101,6 @@ def _infer_visual_token_span(idx: torch.Tensor, soi_id: int = 126084, eoi_id: in
         return soi_pos + 1, eoi_pos
     except ValueError:
         return 2, 1026
-
-
-def _merge_attention_bias_with_vrg(
-    branch_bias: torch.Tensor,
-    attention_bias: Optional[torch.Tensor],
-) -> torch.Tensor:
-    if attention_bias is None:
-        return branch_bias
-    if attention_bias.dtype == torch.bool:
-        additive = torch.zeros(
-            attention_bias.shape,
-            dtype=branch_bias.dtype,
-            device=branch_bias.device,
-        )
-        additive = additive.masked_fill(
-            ~attention_bias, torch.finfo(branch_bias.dtype).min
-        )
-    else:
-        additive = attention_bias.to(
-            dtype=branch_bias.dtype, device=branch_bias.device
-        )
-    if additive.shape[0] == 1:
-        additive = additive.expand(branch_bias.shape[0], *additive.shape[1:])
-    return branch_bias + additive
-
-
-def _original_path_logits(
-    model,
-    x: torch.Tensor,
-    *,
-    attention_bias: Optional[torch.Tensor],
-    cfg_scale: float,
-    prompt_index: torch.Tensor,
-    thinking_cfg: ThinkingSwdDecodeConfig,
-    image_span: Tuple[int, int],
-    mask_id: int,
-) -> torch.Tensor:
-    if thinking_cfg.vrg_enabled:
-        if cfg_scale > 0.0:
-            raise ValueError(
-                "VRG visual guidance cannot be combined with text cfg_scale>0"
-            )
-        seq_len = int(x.shape[1])
-        branch_bias = build_paired_attention_bias(
-            seq_len, image_span, device=x.device
-        )
-        branch_bias = _merge_attention_bias_with_vrg(branch_bias, attention_bias)
-        pair_logits = model(x.repeat(2, 1), attention_bias=branch_bias).logits
-        logits_c, logits_u = torch.chunk(pair_logits, 2, dim=0)
-        return apply_vrg(logits_c, logits_u, thinking_cfg.vrg_scale)
-    if cfg_scale > 0.0:
-        un_x = x.clone()
-        un_x[prompt_index] = mask_id
-        logits = model(torch.cat([x, un_x], dim=0)).logits
-        logits, un_logits = torch.chunk(logits, 2, dim=0)
-        return un_logits + (cfg_scale + 1) * (logits - un_logits)
-    return model(x, attention_bias=attention_bias).logits
 
 
 def _prepare_cv_dcd_decode_config(decode_config, mask_id, temperature, cfg_scale, remasking, block_length, idx):
@@ -536,7 +471,7 @@ class MMadaModelLM(LLaDAModelLM):
 
             batch_size = idx.shape[0]
             if batch_size != 1:
-                raise ValueError("The phase 0--2 VCHD decoder supports batch_size=1")
+                raise ValueError("VCHD decoding supports batch_size=1")
             x = torch.full(
                 (batch_size, idx.shape[1] + max_new_tokens),
                 mask_id,
@@ -616,20 +551,11 @@ class MMadaModelLM(LLaDAModelLM):
         except:
             device = input_embeddings.device
 
-        thinking_cfg = resolve_thinking_swd_config(
-            decode_config
-            if isinstance(decode_config, (ThinkingSwdDecodeConfig, dict))
-            or decode_config is None
-            else None
-        )
-
         result = []
         batch_size = idx.shape[0]
         x = torch.full((batch_size, idx.shape[1] + max_new_tokens), mask_id, dtype=torch.long).to(self.device)
         x[:, :idx.shape[1]] = idx.clone()
         prompt_index = (x != mask_id)
-        image_span = _infer_visual_token_span(idx)
-        swd_state = SwdState() if thinking_cfg.swd_enabled else None
         
         
         assert max_new_tokens % block_length == 0
@@ -637,9 +563,6 @@ class MMadaModelLM(LLaDAModelLM):
 
         assert steps % num_blocks == 0
         steps = steps // num_blocks
-        total_steps = num_blocks * steps
-        response_start = int(idx.shape[1])
-        response_end = response_start + int(max_new_tokens)
         
         # print(f"num_blocks: {num_blocks}, steps: {steps}")
         # num_transfer_tokens = get_num_transfer_tokens(prompt_index, steps)
@@ -649,34 +572,23 @@ class MMadaModelLM(LLaDAModelLM):
             # num_transfer_tokens = get_num_transfer_tokens(prompt_index, steps)
             # print(f"num_transfer_tokens: {num_transfer_tokens}, num_transfer_tokens.shape: {num_transfer_tokens.shape}")
             for i in range(steps):
-                mask_index = (x == mask_id)
-                logits = _original_path_logits(
-                    self,
-                    x,
-                    attention_bias=attention_bias,
-                    cfg_scale=cfg_scale,
-                    prompt_index=prompt_index,
-                    thinking_cfg=thinking_cfg,
-                    image_span=image_span,
-                    mask_id=mask_id,
-                )
+                mask_index = (x == mask_id) 
+                if cfg_scale > 0.0:
+                    un_x = x.clone()
+                    un_x[prompt_index] = mask_id
+                    x_ = torch.cat([x, un_x], dim=0)
+                    logits = self(x_).logits
+                    logits, un_logits = torch.chunk(logits, 2, dim=0)
+                    logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+                else:
+                    logits = self(x, attention_bias=attention_bias).logits
                 
                 logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
                 x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
-                swd_p_curr = None
                 if remasking == 'low_confidence':
-                    if thinking_cfg.swd_enabled:
-                        # SWD path: never materialize full-sequence float64 softmax.
-                        x0_p, swd_p_curr = response_span_token_probs(
-                            logits,
-                            x0,
-                            response_start=response_start,
-                            response_end=response_end,
-                        )
-                    else:
-                        p = F.softmax(logits.to(torch.float64), dim=-1)
-                        x0_p = torch.squeeze(
-                            torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+                    p = F.softmax(logits.to(torch.float64), dim=-1)
+                    x0_p = torch.squeeze(
+                        torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
                 elif remasking == 'random':
                     x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
                 else:
@@ -686,32 +598,6 @@ class MMadaModelLM(LLaDAModelLM):
 
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -np.inf)
-
-                global_step = num_block * steps + i
-                if thinking_cfg.psp_enabled and remasking == 'low_confidence':
-                    confidence = apply_psp(
-                        confidence,
-                        step_index=global_step,
-                        num_steps=total_steps,
-                        response_start=response_start,
-                        response_end=response_end,
-                        gamma=thinking_cfg.psp_gamma,
-                    )
-                if (
-                    thinking_cfg.swd_enabled
-                    and remasking == 'low_confidence'
-                    and swd_state is not None
-                ):
-                    confidence = apply_swd_to_confidence(
-                        confidence,
-                        logits,
-                        swd_state,
-                        lambda_=thinking_cfg.swd_lambda,
-                        response_start=response_start,
-                        response_end=response_end,
-                        mask_index=mask_index,
-                        p_curr=swd_p_curr,
-                    )
 
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 for j in range(confidence.shape[0]):
@@ -796,20 +682,11 @@ class MMadaModelLM(LLaDAModelLM):
         except:
             device = input_embeddings.device
 
-        thinking_cfg = resolve_thinking_swd_config(
-            decode_config
-            if isinstance(decode_config, (ThinkingSwdDecodeConfig, dict))
-            or decode_config is None
-            else None
-        )
-
         result = []
         batch_size = idx.shape[0]
         x = torch.full((batch_size, idx.shape[1] + max_new_tokens), mask_id, dtype=torch.long).to(self.device)
         x[:, :idx.shape[1]] = idx.clone()
         prompt_index = (x != mask_id)
-        image_span = _infer_visual_token_span(idx)
-        swd_state = SwdState() if thinking_cfg.swd_enabled else None
         
         
         assert max_new_tokens % block_length == 0
@@ -817,41 +694,28 @@ class MMadaModelLM(LLaDAModelLM):
 
         assert steps % num_blocks == 0
         steps = steps // num_blocks
-        total_steps = num_blocks * steps
-        response_start = int(idx.shape[1])
-        response_end = response_start + int(max_new_tokens)
         
         for num_block in range(num_blocks):
             block_mask_index = (x[:, idx.shape[1] + num_block * block_length: idx.shape[1] + (num_block + 1) * block_length:] == mask_id)
             num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
             for i in range(steps):
-                mask_index = (x == mask_id)
-                logits = _original_path_logits(
-                    self,
-                    x,
-                    attention_bias=attention_bias,
-                    cfg_scale=cfg_scale,
-                    prompt_index=prompt_index,
-                    thinking_cfg=thinking_cfg,
-                    image_span=image_span,
-                    mask_id=mask_id,
-                )
+                mask_index = (x == mask_id) 
+                if cfg_scale > 0.0:
+                    un_x = x.clone()
+                    un_x[prompt_index] = mask_id
+                    x_ = torch.cat([x, un_x], dim=0)
+                    logits = self(x_).logits
+                    logits, un_logits = torch.chunk(logits, 2, dim=0)
+                    logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+                else:
+                    logits = self(x, attention_bias=attention_bias).logits
                 
                 logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
                 x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
-                swd_p_curr = None
                 if remasking == 'low_confidence':
-                    if thinking_cfg.swd_enabled:
-                        x0_p, swd_p_curr = response_span_token_probs(
-                            logits,
-                            x0,
-                            response_start=response_start,
-                            response_end=response_end,
-                        )
-                    else:
-                        p = F.softmax(logits.to(torch.float64), dim=-1)
-                        x0_p = torch.squeeze(
-                            torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+                    p = F.softmax(logits.to(torch.float64), dim=-1)
+                    x0_p = torch.squeeze(
+                        torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
                 elif remasking == 'random':
                     x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
                 else:
@@ -861,32 +725,6 @@ class MMadaModelLM(LLaDAModelLM):
 
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(mask_index, x0_p, -np.inf)
-
-                global_step = num_block * steps + i
-                if thinking_cfg.psp_enabled and remasking == 'low_confidence':
-                    confidence = apply_psp(
-                        confidence,
-                        step_index=global_step,
-                        num_steps=total_steps,
-                        response_start=response_start,
-                        response_end=response_end,
-                        gamma=thinking_cfg.psp_gamma,
-                    )
-                if (
-                    thinking_cfg.swd_enabled
-                    and remasking == 'low_confidence'
-                    and swd_state is not None
-                ):
-                    confidence = apply_swd_to_confidence(
-                        confidence,
-                        logits,
-                        swd_state,
-                        lambda_=thinking_cfg.swd_lambda,
-                        response_start=response_start,
-                        response_end=response_end,
-                        mask_index=mask_index,
-                        p_curr=swd_p_curr,
-                    )
 
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 for j in range(confidence.shape[0]):

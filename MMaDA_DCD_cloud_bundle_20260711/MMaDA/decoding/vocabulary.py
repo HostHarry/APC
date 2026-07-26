@@ -4,15 +4,13 @@ from typing import Iterable, Optional
 
 import torch
 
-from .config import EOSTokenId, normalize_eos_token_ids
-
 
 def build_valid_text_vocab(
     vocab_size: int,
     *,
     text_vocab_size: Optional[int],
     forbidden_token_ids: Iterable[int],
-    eos_token_id: EOSTokenId,
+    eos_token_id: Optional[int],
     device: torch.device,
 ) -> torch.BoolTensor:
     """Return the model-vocabulary mask allowed for answer generation.
@@ -20,7 +18,7 @@ def build_valid_text_vocab(
     MMaDA places image codebook entries after ``llm_vocab_size``. Restricting
     the valid prefix removes those image tokens, while ``forbidden_token_ids``
     removes structural tokens that still live inside the text-side prefix.
-    EOS tokens are restored last because they are legal answer tokens.
+    EOS is restored last because it is a legal answer token.
     """
 
     if vocab_size <= 0:
@@ -40,13 +38,14 @@ def build_valid_text_vocab(
         if 0 <= token_id < vocab_size:
             valid[token_id] = False
 
-    for eos_token_id_value in normalize_eos_token_ids(eos_token_id):
-        if not 0 <= eos_token_id_value < text_end:
+    if eos_token_id is not None:
+        eos_token_id = int(eos_token_id)
+        if not 0 <= eos_token_id < text_end:
             raise ValueError(
-                f"eos_token_id={eos_token_id_value} is outside text vocabulary "
+                f"eos_token_id={eos_token_id} is outside text vocabulary "
                 f"[0, {text_end})"
             )
-        valid[eos_token_id_value] = True
+        valid[eos_token_id] = True
 
     if not bool(valid.any()):
         raise ValueError("Text-vocabulary filtering removed every token")

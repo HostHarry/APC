@@ -45,6 +45,7 @@ from .configuration_llada import (
 from .modeling_llada import LLaDAModelLM
 from .mmada_decode import (
     MMaDADecodeConfig,
+    dcd_decode_text_official,
     decode_config_from_dict,
     dispatch_dcd_decode_image,
     dispatch_dcd_decode_text,
@@ -555,7 +556,7 @@ class MMadaModelLM(LLaDAModelLM):
                 attention_mask=attention_mask,
             )
 
-        if decode_strategy == 'dcd':
+        if decode_strategy in ('dcd', 'official_dcd'):
             if decode_config is None:
                 decode_config = MMaDADecodeConfig(mask_id=mask_id, temperature=temperature, cfg_scale=cfg_scale, remasking=remasking, block_size=block_length)
             elif isinstance(decode_config, dict):
@@ -569,15 +570,27 @@ class MMadaModelLM(LLaDAModelLM):
                 ab = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
             else:
                 ab = None
-            result = dispatch_dcd_decode_text(
-                model=self,
-                tokens=x,
-                decode_start=idx.shape[1],
-                decode_end=idx.shape[1] + max_new_tokens,
-                config=decode_config,
-                attention_bias=ab,
-                prompt_index=prompt_index,
-            )
+            if decode_strategy == 'official_dcd':
+                if cfg_scale > 0.0:
+                    raise ValueError("Official DCD reproduction does not use MMU CFG")
+                result = dcd_decode_text_official(
+                    model=self,
+                    tokens=x,
+                    decode_start=idx.shape[1],
+                    decode_end=idx.shape[1] + max_new_tokens,
+                    config=decode_config,
+                    attention_bias=ab,
+                )
+            else:
+                result = dispatch_dcd_decode_text(
+                    model=self,
+                    tokens=x,
+                    decode_start=idx.shape[1],
+                    decode_end=idx.shape[1] + max_new_tokens,
+                    config=decode_config,
+                    attention_bias=ab,
+                    prompt_index=prompt_index,
+                )
             return result if not decode_config.debug else result[0]
 
         if decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd'):

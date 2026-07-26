@@ -1,3 +1,8 @@
+# 43133-mmada
+
+Local MMaDA / Thinking Diffusion (SWD, PSP, PSP+VRG) snapshot uploaded from the autodl workspace.
+Includes the M3CoT `use_custom_prompt` exclusion so M3CoT does not use the generic MCQ prompt.
+
 # APC: MMaDA decoding experiments on VLind-Bench
 
 This branch contains the code that is actually executed by the current

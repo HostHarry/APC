@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
@@ -28,24 +28,48 @@ class HistoryObservation:
 
 
 @dataclass(frozen=True)
-class CCDHistorySnapshot:
-    """Full contrast distributions for one iteration's top-V positions."""
+class FocusFrame:
+    """One iteration's captured contrast distributions on the focus positions.
+
+    The decoder keeps a bounded queue of these frames. Each frame stores the
+    ``focus_capacity`` positions that had the highest CD-APC confidence when
+    the frame was recorded, together with the full-vocabulary contrast
+    distribution at each of those positions. Downstream code interprets the
+    queue through a per-position dwell counter (see
+    :func:`compute_focus_dwell_counter`), so no set-intersection primitive is
+    ever taken across frames.
+
+    ``lookup`` is an optional pre-computed inverse map of length
+    ``total_positions`` such that ``lookup[i]`` is the row index of position
+    ``i`` in ``distributions`` (or ``-1`` when the position is absent). It is
+    built once by :func:`make_focus_frame` and re-used by every downstream
+    observation, avoiding the O(dwell_depth) full-vector re-allocations that
+    the marginalization loop would otherwise trigger.
+    """
 
     positions: torch.LongTensor
     distributions: torch.FloatTensor
+    lookup: Optional[torch.LongTensor] = None
 
 
 @dataclass(frozen=True)
-class CCDHistoryObservation:
-    """Current CCD intersection and context-marginalized token statistics."""
+class FocusDwellObservation:
+    """Dwell-gated CD-APC marginal token statistics for one iteration.
 
-    current_snapshot: CCDHistorySnapshot
+    ``dwell_counter[i]`` is the length of the contiguous most-recent focus
+    suffix containing position ``i`` (including the current iteration). A
+    position is eligible when its dwell counter has reached the configured
+    dwell depth; ineligible positions inherit the raw CD-APC decision.
+    """
+
+    current_frame: FocusFrame
     eligible_mask: torch.BoolTensor
+    dwell_counter: torch.LongTensor
     marginal_token: torch.LongTensor
     marginal_entropy: torch.FloatTensor
     base_confidence: torch.FloatTensor
     contrast_confidence: torch.FloatTensor
-    history_depth: int
+    dwell_depth: int
 
 
 @dataclass(frozen=True)
@@ -147,11 +171,20 @@ class UnifiedTrajectoryPosterior:
 
 
 @dataclass(frozen=True)
-class AdaptiveTemporalObservation:
-    """CCD-stable positions with an exposure-gated long-tail posterior."""
+class FocusLongTailObservation:
+    """Dwell-gated positions with an exposure-modulated long-tail posterior.
 
-    current_snapshot: CCDHistorySnapshot
+    Fields mirror :class:`FocusDwellObservation` but the marginal distribution
+    is computed by mixing a rectangular kernel over the current dwell depth
+    with a shifted log-logistic survival kernel over the full contiguous
+    dwell suffix of each eligible position. ``mix_ceiling == 0`` collapses
+    the long-tail contribution to zero and reproduces the rectangular
+    (dwell-only) baseline exactly.
+    """
+
+    current_frame: FocusFrame
     eligible_mask: torch.BoolTensor
+    dwell_counter: torch.LongTensor
     selected_token: torch.LongTensor
     base_confidence: torch.FloatTensor
     contrast_confidence: torch.FloatTensor
@@ -163,8 +196,8 @@ class AdaptiveTemporalObservation:
     conflict: torch.FloatTensor
     long_tail_mass: torch.FloatTensor
     current_weight: torch.FloatTensor
-    effective_history_depth: torch.LongTensor
-    history_depth: int
+    effective_dwell_depth: torch.LongTensor
+    dwell_depth: int
 
 
 def loglogistic_survival_kernel(
@@ -174,7 +207,15 @@ def loglogistic_survival_kernel(
     shape: float,
     offset: float,
 ) -> torch.FloatTensor:
-    """Evaluate a shifted discrete log-logistic survival memory kernel."""
+    """Evaluate a shifted discrete log-logistic survival memory kernel.
+
+    The kernel evaluates
+    :math:`S(\\ell) = 1 / (1 + ((\\ell + \\delta) / \\lambda)^{\\kappa})` on
+    integer lags. It is monotone non-increasing, strictly positive, and has a
+    heavy power-law tail (kernel decays as :math:`\\ell^{-\\kappa}` for large
+    :math:`\\ell`). This ensures that dwell-suffix marginalization keeps a
+    non-vanishing weight on older observations rather than truncating them.
+    """
 
     if not math.isfinite(float(scale)) or scale <= 0.0:
         raise ValueError("Log-logistic scale must be finite and positive")
@@ -192,8 +233,167 @@ def loglogistic_survival_kernel(
     return 1.0 / (1.0 + scaled_age.pow(float(shape)))
 
 
-def observe_adaptive_temporal_history(
-    history: Sequence[CCDHistorySnapshot],
+def focus_longtail_history_upper_bound(
+    *,
+    kernel_scale: float,
+    kernel_shape: float,
+    kernel_offset: float,
+    epsilon: float,
+    dwell_depth: int,
+) -> int:
+    """Smallest history depth that keeps every log-logistic weight ``>= epsilon``.
+
+    The long-tail kernel decays as ``lag^{-kappa}`` so it never reaches zero
+    but the contribution becomes numerically negligible quickly. We solve
+    ``S(lag) >= epsilon`` in closed form and clamp to ``dwell_depth`` (the
+    rectangular window must always be retained). Callers use this to bound
+    the stored frame ring buffer without truncating any weight above
+    ``epsilon``.
+    """
+
+    if not math.isfinite(float(epsilon)) or not 0.0 < float(epsilon) < 1.0:
+        raise ValueError("epsilon must be finite and in (0, 1)")
+    max_useful_lag = math.ceil(
+        float(kernel_scale)
+        * (1.0 / float(epsilon) - 1.0) ** (1.0 / float(kernel_shape))
+        - float(kernel_offset)
+    )
+    return max(int(dwell_depth), max_useful_lag)
+
+
+def _build_focus_lookup(
+    positions: torch.LongTensor, total_positions: int
+) -> torch.LongTensor:
+    """Return ``lookup[i] = row_of(i)`` (or ``-1`` if ``i`` is absent).
+
+    Building the inverse index once amortises the ``O(total_positions)``
+    allocation across every marginalization pass that consults the same
+    frame. Downstream code should treat the result as immutable.
+    """
+
+    if positions.ndim != 1:
+        raise ValueError("Focus positions must be one-dimensional")
+    lookup = torch.full(
+        (int(total_positions),),
+        -1,
+        dtype=torch.long,
+        device=positions.device,
+    )
+    lookup[positions] = torch.arange(
+        positions.numel(), dtype=torch.long, device=positions.device
+    )
+    return lookup
+
+
+def make_focus_frame(
+    positions: torch.LongTensor,
+    distributions: torch.Tensor,
+    total_positions: int,
+) -> FocusFrame:
+    """Materialise a :class:`FocusFrame` with a cached inverse lookup.
+
+    The observe functions call this helper once when a new frame enters the
+    ring buffer, so the reverse lookup used inside the marginalization loop
+    is built exactly once per frame rather than once per ``lag``.
+    """
+
+    positions = positions.detach().clone()
+    distributions = distributions.detach().clone()
+    lookup = _build_focus_lookup(positions, total_positions)
+    return FocusFrame(
+        positions=positions, distributions=distributions, lookup=lookup
+    )
+
+
+def _focus_frame_lookup(
+    frame: FocusFrame, total_positions: int, device: torch.device
+) -> torch.LongTensor:
+    """Return ``frame.lookup`` if it exists on the right device, else rebuild.
+
+    We keep the fallback so callers that construct raw :class:`FocusFrame`
+    instances without a lookup still work; :func:`make_focus_frame` should
+    be preferred for new code.
+    """
+
+    lookup = frame.lookup
+    if lookup is not None and lookup.device == device:
+        if int(lookup.numel()) != int(total_positions):
+            raise ValueError(
+                "Cached focus frame lookup length disagrees with the current "
+                "position count; rebuild the frame via ``make_focus_frame``"
+            )
+        return lookup
+    return _build_focus_lookup(frame.positions.to(device), total_positions)
+
+
+def _current_focus_positions(
+    position_confidence: torch.Tensor,
+    mask: torch.BoolTensor,
+    focus_capacity: int,
+) -> torch.LongTensor:
+    """Return the top ``focus_capacity`` unresolved positions by confidence.
+
+    These positions form the *current focus set* used to update the dwell
+    counters. They are ordered by descending contrast confidence with a
+    stable secondary key so decisions are deterministic on ties.
+    """
+
+    masked_positions = torch.nonzero(mask, as_tuple=True)[0]
+    if masked_positions.numel() == 0:
+        raise ValueError(
+            "Cannot identify the current focus set without masked positions"
+        )
+    order = torch.argsort(
+        position_confidence[masked_positions],
+        descending=True,
+        stable=True,
+    )
+    retain = min(int(focus_capacity), int(masked_positions.numel()))
+    return masked_positions[order[:retain]]
+
+
+def compute_focus_dwell_counter(
+    focus_frames: Sequence[FocusFrame],
+    current_positions: torch.LongTensor,
+    *,
+    total_positions: int,
+) -> torch.LongTensor:
+    """Per-position dwell counter: length of the contiguous newest suffix of
+    focus frames containing each position, plus one for the current frame.
+
+    This is the *only* eligibility primitive used by the decoder. It reads as
+    "how many consecutive most-recent iterations has this position stayed in
+    the model's high-confidence focus region", and it replaces any explicit
+    set-intersection language across frames. Two positions whose dwell
+    counters have the same value have appeared in exactly the same suffix of
+    focus frames.
+    """
+
+    device = current_positions.device
+    dwell = torch.zeros(int(total_positions), dtype=torch.long, device=device)
+    if current_positions.numel() == 0:
+        return dwell
+    dwell[current_positions] = 1
+    chain = torch.zeros(int(total_positions), dtype=torch.bool, device=device)
+    chain[current_positions] = True
+    for frame in reversed(list(focus_frames)):
+        if frame.positions.device != device:
+            raise ValueError(
+                "Focus frames must live on the same device as the mask"
+            )
+        membership = torch.zeros(
+            int(total_positions), dtype=torch.bool, device=device
+        )
+        membership[frame.positions] = True
+        chain &= membership
+        if not bool(chain.any()):
+            break
+        dwell += chain.long()
+    return dwell
+
+
+def observe_focus_longtail(
+    focus_frames: Sequence[FocusFrame],
     contrast_distribution: torch.Tensor,
     visual_distribution: torch.Tensor,
     position_confidence: torch.Tensor,
@@ -202,34 +402,36 @@ def observe_adaptive_temporal_history(
     exposure: torch.Tensor,
     visual_relevance: torch.Tensor,
     *,
-    stability_length: int,
-    top_v_positions: int,
-    loglogistic_scale: float,
-    loglogistic_shape: float,
-    loglogistic_offset: float,
-    tail_mix_max: float,
-    exposure_scale: float,
-    relevance_scale: float,
-    conflict_scale: float,
-) -> AdaptiveTemporalObservation:
-    """Fuse a CCD-stable trajectory with a log-logistic long-tail kernel.
+    dwell_depth: int,
+    focus_capacity: int,
+    kernel_scale: float,
+    kernel_shape: float,
+    kernel_offset: float,
+    mix_ceiling: float,
+    exposure_tau: float,
+    relevance_tau: float,
+    conflict_tau: float,
+) -> FocusLongTailObservation:
+    """Marginalize a dwell-gated trajectory with a log-logistic long-tail kernel.
 
-    Position eligibility is exactly CCD's intersection of the current and
-    recent top-V confidence sets. The baseline rectangular kernel assigns
-    equal mass to the current distribution and ``stability_length`` snapshots.
-    Exposure-calibrated visual/trajectory conflict continuously mixes in a
-    shifted log-logistic survival kernel over the entire contiguous history.
-    A zero activation therefore reproduces CCD exactly, while positive
-    activation creates a sharp fourth-round drop followed by a power-law tail.
+    Eligibility is decided by the per-position dwell counter over the ``dwell_depth``
+    most-recent focus frames plus the current iteration. Ineligible positions
+    return their raw CD-APC decision. For each eligible position ``i`` the
+    posterior mixes a rectangular kernel over the current dwell window with a
+    shifted log-logistic survival kernel over the entire dwell suffix. The
+    mixing weight is exposure-, relevance-, and conflict-modulated and clamps
+    to ``[0, mix_ceiling]``; setting ``mix_ceiling = 0`` collapses the
+    long-tail contribution to zero and the posterior becomes the pure
+    dwell-window rectangular baseline.
     """
 
     if contrast_distribution.ndim != 2:
         raise ValueError(
-            "Adaptive temporal contrast distribution must be two-dimensional"
+            "Focus long-tail contrast distribution must be two-dimensional"
         )
     if visual_distribution.shape != contrast_distribution.shape:
         raise ValueError(
-            "Adaptive temporal visual and contrast distributions must match"
+            "Focus long-tail visual and contrast distributions must match"
         )
     position_count = int(contrast_distribution.shape[0])
     expected_shape = (position_count,)
@@ -241,23 +443,23 @@ def observe_adaptive_temporal_history(
         or visual_relevance.shape != expected_shape
     ):
         raise ValueError(
-            "Adaptive temporal position statistics must match distributions"
+            "Focus long-tail position statistics must match distributions"
         )
     if mask.dtype != torch.bool:
-        raise TypeError("Adaptive temporal mask must be boolean")
-    if stability_length < 1:
-        raise ValueError("Adaptive stability_length must be at least 1")
-    if top_v_positions < 1:
-        raise ValueError("Adaptive top_v_positions must be at least 1")
+        raise TypeError("Focus long-tail mask must be boolean")
+    if dwell_depth < 1:
+        raise ValueError("dwell_depth must be at least 1")
+    if focus_capacity < 1:
+        raise ValueError("focus_capacity must be at least 1")
     if not (
-        math.isfinite(float(tail_mix_max))
-        and 0.0 <= float(tail_mix_max) <= 1.0
+        math.isfinite(float(mix_ceiling))
+        and 0.0 <= float(mix_ceiling) <= 1.0
     ):
-        raise ValueError("tail_mix_max must be finite and in [0, 1]")
+        raise ValueError("mix_ceiling must be finite and in [0, 1]")
     for name, value in (
-        ("exposure_scale", exposure_scale),
-        ("relevance_scale", relevance_scale),
-        ("conflict_scale", conflict_scale),
+        ("exposure_tau", exposure_tau),
+        ("relevance_tau", relevance_tau),
+        ("conflict_tau", conflict_tau),
     ):
         if not math.isfinite(float(value)) or float(value) <= 0.0:
             raise ValueError(f"{name} must be finite and positive")
@@ -269,64 +471,72 @@ def observe_adaptive_temporal_history(
         exposure,
         visual_relevance,
     )
-    if not all(bool(torch.isfinite(value).all()) for value in tensors):
+    # One host synchronisation instead of six: build the six per-tensor finite
+    # reductions eagerly (they run as concurrent CUDA kernels) and only issue
+    # a single ``.item()`` at the end.
+    if not bool(
+        torch.stack(
+            [torch.isfinite(value).all() for value in tensors]
+        ).all().item()
+    ):
         raise FloatingPointError(
-            "Adaptive temporal observations must be finite"
+            "Focus long-tail observations must be finite"
         )
     if bool((exposure < 0.0).any()):
-        raise ValueError("Adaptive temporal exposure must be non-negative")
+        raise ValueError("Focus long-tail exposure must be non-negative")
 
-    masked_positions = torch.nonzero(mask, as_tuple=True)[0]
-    if masked_positions.numel() == 0:
-        raise ValueError(
-            "Cannot observe adaptive temporal history without masked positions"
-        )
-    order = torch.argsort(
-        position_confidence[masked_positions],
-        descending=True,
-        stable=True,
+    current_positions = _current_focus_positions(
+        position_confidence, mask, focus_capacity
     )
-    retain = min(int(top_v_positions), int(masked_positions.numel()))
-    current_positions = masked_positions[order[:retain]]
-    current_snapshot = CCDHistorySnapshot(
-        positions=current_positions.detach().clone(),
-        distributions=contrast_distribution[current_positions].detach().clone(),
+    current_frame = make_focus_frame(
+        current_positions,
+        contrast_distribution[current_positions],
+        position_count,
     )
 
-    recent_history = list(history)[-int(stability_length) :]
-    eligible_mask = torch.zeros_like(mask)
-    eligible_mask[current_positions] = True
-    for snapshot in recent_history:
-        if snapshot.distributions.ndim != 2:
+    # Validate each stored frame once; the dwell counter walks them again in
+    # ``compute_focus_dwell_counter``.
+    for frame in focus_frames:
+        if frame.distributions.ndim != 2:
             raise ValueError(
-                "Adaptive history distributions must be two-dimensional"
+                "Focus frame distributions must be two-dimensional"
             )
-        if snapshot.distributions.shape[0] != snapshot.positions.numel():
+        if frame.distributions.shape[0] != frame.positions.numel():
             raise ValueError(
-                "Adaptive history position/distribution counts must match"
+                "Focus frame position/distribution counts must match"
             )
-        if snapshot.distributions.shape[1] != contrast_distribution.shape[1]:
+        if frame.distributions.shape[1] != contrast_distribution.shape[1]:
             raise ValueError(
-                "Adaptive history vocabulary size changed between iterations"
+                "Focus frame vocabulary size changed between iterations"
             )
-        if snapshot.positions.device != mask.device:
+        if frame.positions.device != mask.device:
             raise ValueError(
-                "Adaptive history and current mask must share a device"
+                "Focus frames and current mask must share a device"
             )
-        membership = torch.zeros_like(mask)
-        membership[snapshot.positions] = True
-        eligible_mask &= membership
+
+    recent_focus_frames = list(focus_frames)[-int(dwell_depth) :]
+    dwell_counter = compute_focus_dwell_counter(
+        focus_frames,
+        current_positions,
+        total_positions=position_count,
+    )
+    # Warmup semantics: before ``dwell_depth`` frames exist we require the
+    # position to appear in every stored frame plus the current one, so the
+    # first ``dwell_depth`` iterations accept eligibility on shorter suffixes.
+    # This is *not* the strict ``D >= dwell_depth + 1`` gate: it degenerates
+    # to that only once the ring buffer has been filled.
+    dwell_gate = 1 + len(recent_focus_frames)
+    eligible_mask = dwell_counter >= dwell_gate
 
     current = contrast_distribution.float()
     visual = visual_distribution.float()
     tiny = torch.finfo(torch.float32).tiny
-    current = current / current.sum(dim=-1, keepdim=True).clamp_min(tiny)
     relevance_precision = -torch.expm1(
         -visual_relevance.float().clamp_min(0.0)
-        / float(relevance_scale)
+        / float(relevance_tau)
     )
     exposure_precision = -torch.expm1(
-        -exposure.float().clamp_min(0.0) / float(exposure_scale)
+        -exposure.float().clamp_min(0.0) / float(exposure_tau)
     )
 
     selected_token = current.argmax(dim=-1)
@@ -342,46 +552,65 @@ def observe_adaptive_temporal_history(
     conflict = torch.zeros_like(position_confidence.float())
     long_tail_mass = torch.zeros_like(position_confidence.float())
     current_weight = torch.ones_like(position_confidence.float())
-    effective_history_depth = torch.ones_like(
+    effective_dwell_depth = torch.ones_like(
         selected_token, dtype=torch.long
     )
 
     eligible_positions = torch.nonzero(eligible_mask, as_tuple=True)[0]
     if eligible_positions.numel() > 0:
         current_eligible = current[eligible_positions]
-        ccd_distributions = [current_eligible]
-        for snapshot in reversed(recent_history):
-            lookup = torch.full(
-                (position_count,),
-                -1,
-                dtype=torch.long,
-                device=mask.device,
-            )
-            lookup[snapshot.positions] = torch.arange(
-                snapshot.positions.numel(),
-                dtype=torch.long,
-                device=mask.device,
-            )
+        available_focus_frames = list(focus_frames)
+        # Memoise the inverse lookup for a given frame within this call.
+        # ``FocusFrame.lookup`` covers the common decoder path (frames enter
+        # through :func:`make_focus_frame`); raw frames construct once and
+        # cache in the local dict so the dwell-reference pass and the main
+        # marginalization loop share the result without an upfront allocation
+        # storm on histories that break early.
+        _local_lookup_cache: Dict[int, torch.LongTensor] = {}
+
+        def _lookup_for(frame_index: int) -> torch.LongTensor:
+            frame = available_focus_frames[frame_index]
+            cached = frame.lookup
+            if cached is not None and cached.device == mask.device:
+                return cached
+            cached = _local_lookup_cache.get(frame_index)
+            if cached is not None:
+                return cached
+            fresh = _build_focus_lookup(frame.positions, position_count)
+            _local_lookup_cache[frame_index] = fresh
+            return fresh
+
+        recent_start = len(available_focus_frames) - len(recent_focus_frames)
+        # Dwell-window reference distribution: average over the current frame
+        # and the ``dwell_depth`` most-recent frames. Eligibility guarantees
+        # that every eligible position appears in each of these frames.
+        window_distributions = [current_eligible]
+        for offset in range(len(recent_focus_frames) - 1, -1, -1):
+            frame_index = recent_start + offset
+            lookup = _lookup_for(frame_index)
+            frame = available_focus_frames[frame_index]
             rows = lookup[eligible_positions]
             if bool((rows < 0).any()):
                 raise RuntimeError(
-                    "Adaptive CCD intersection lost a recent position"
+                    "Focus dwell window lost an eligible position"
                 )
-            ccd_distributions.append(
-                snapshot.distributions[rows].float()
+            window_distributions.append(
+                frame.distributions[rows].float()
             )
-        ccd_reference = torch.stack(ccd_distributions, dim=0).mean(dim=0)
-        ccd_reference = ccd_reference / ccd_reference.sum(
+        dwell_reference = torch.stack(window_distributions, dim=0).mean(
+            dim=0
+        )
+        dwell_reference = dwell_reference / dwell_reference.sum(
             dim=-1, keepdim=True
         ).clamp_min(tiny)
         eligible_conflict = 0.5 * torch.abs(
-            current_eligible - ccd_reference
+            current_eligible - dwell_reference
         ).sum(dim=-1)
         conflict_precision = -torch.expm1(
-            -eligible_conflict / float(conflict_scale)
+            -eligible_conflict / float(conflict_tau)
         )
         eligible_activation = (
-            float(tail_mix_max)
+            float(mix_ceiling)
             * exposure_precision[eligible_positions]
             * relevance_precision[eligible_positions]
             * conflict_precision
@@ -391,11 +620,13 @@ def observe_adaptive_temporal_history(
         denominator = torch.zeros_like(eligible_activation)
         tail_numerator = torch.zeros_like(eligible_activation)
         depth = torch.zeros_like(eligible_positions)
+        # A position leaves the marginalization chain the first time it is
+        # missing from a historical focus frame. This preserves the invariant
+        # that only contiguous dwell suffixes contribute weight.
         chain_active = torch.ones_like(
             eligible_positions, dtype=torch.bool
         )
-        available_history = list(history)
-        max_lag = len(available_history)
+        max_lag = len(available_focus_frames)
         lags = torch.arange(
             max_lag + 1,
             dtype=torch.float32,
@@ -403,13 +634,13 @@ def observe_adaptive_temporal_history(
         )
         survival = loglogistic_survival_kernel(
             lags,
-            scale=loglogistic_scale,
-            shape=loglogistic_shape,
-            offset=loglogistic_offset,
+            scale=kernel_scale,
+            shape=kernel_shape,
+            offset=kernel_offset,
         )
 
         for lag in range(max_lag + 1):
-            rectangular = 1.0 if lag <= int(stability_length) else 0.0
+            rectangular = 1.0 if lag <= int(dwell_depth) else 0.0
             lag_weight = (
                 (1.0 - eligible_activation) * rectangular
                 + eligible_activation * survival[lag]
@@ -421,18 +652,13 @@ def observe_adaptive_temporal_history(
                 )
                 lag_distribution = current_eligible
             else:
-                snapshot = available_history[-lag]
-                lookup = torch.full(
-                    (position_count,),
-                    -1,
-                    dtype=torch.long,
-                    device=mask.device,
-                )
-                lookup[snapshot.positions] = torch.arange(
-                    snapshot.positions.numel(),
-                    dtype=torch.long,
-                    device=mask.device,
-                )
+                frame_index = len(available_focus_frames) - lag
+                frame = available_focus_frames[frame_index]
+                # ``_lookup_for`` returns the cached ``FocusFrame.lookup``
+                # when present (the common decoder path) or memoises a fresh
+                # build otherwise. Either way each frame is materialised at
+                # most once per call, and only when actually visited.
+                lookup = _lookup_for(frame_index)
                 rows = lookup[eligible_positions]
                 chain_active &= rows >= 0
                 active_indices = torch.nonzero(
@@ -440,7 +666,7 @@ def observe_adaptive_temporal_history(
                 )[0]
                 if active_indices.numel() == 0:
                     break
-                lag_distribution = snapshot.distributions[
+                lag_distribution = frame.distributions[
                     rows[active_indices]
                 ].float()
             active_weight = lag_weight[active_indices]
@@ -449,7 +675,7 @@ def observe_adaptive_temporal_history(
             )
             denominator[active_indices] += active_weight
             depth[active_indices] += (active_weight > tiny).long()
-            if lag > int(stability_length):
+            if lag > int(dwell_depth):
                 tail_numerator[active_indices] += active_weight
 
         posterior = numerator / denominator.unsqueeze(-1).clamp_min(tiny)
@@ -458,7 +684,7 @@ def observe_adaptive_temporal_history(
         ).clamp_min(tiny)
         if not bool(torch.isfinite(posterior).all()):
             raise FloatingPointError(
-                "Adaptive long-tail posterior produced NaN or Inf"
+                "Focus long-tail posterior produced NaN or Inf"
             )
         eligible_token = posterior.argmax(dim=-1)
         eligible_probability = posterior.gather(
@@ -495,7 +721,7 @@ def observe_adaptive_temporal_history(
             )
             / denominator.clamp_min(tiny)
         )
-        effective_history_depth[eligible_positions] = depth
+        effective_dwell_depth[eligible_positions] = depth
 
     outputs = (
         base_confidence,
@@ -507,13 +733,21 @@ def observe_adaptive_temporal_history(
         long_tail_mass,
         current_weight,
     )
-    if not all(bool(torch.isfinite(value[mask]).all()) for value in outputs):
+    # Single-sync variant of eight ``bool(...).all()`` short-circuit checks:
+    # every per-output finite reduction runs concurrently on the device and
+    # the host waits exactly once at the aggregate ``.item()``.
+    if not bool(
+        torch.stack(
+            [torch.isfinite(value[mask]).all() for value in outputs]
+        ).all().item()
+    ):
         raise FloatingPointError(
-            "Adaptive temporal decision statistics produced NaN or Inf"
+            "Focus long-tail decision statistics produced NaN or Inf"
         )
-    return AdaptiveTemporalObservation(
-        current_snapshot=current_snapshot,
+    return FocusLongTailObservation(
+        current_frame=current_frame,
         eligible_mask=eligible_mask,
+        dwell_counter=dwell_counter,
         selected_token=selected_token,
         base_confidence=base_confidence,
         contrast_confidence=contrast_confidence,
@@ -525,8 +759,8 @@ def observe_adaptive_temporal_history(
         conflict=conflict,
         long_tail_mass=long_tail_mass,
         current_weight=current_weight,
-        effective_history_depth=effective_history_depth,
-        history_depth=len(recent_history),
+        effective_dwell_depth=effective_dwell_depth,
+        dwell_depth=len(recent_focus_frames),
     )
 
 
@@ -1551,18 +1785,26 @@ def compute_unified_trajectory_posterior(
     )
 
 
-def observe_ccd_history(
-    history: Sequence[CCDHistorySnapshot],
+def observe_focus_dwell(
+    focus_frames: Sequence[FocusFrame],
     contrast_distribution: torch.Tensor,
     visual_distribution: torch.Tensor,
     position_confidence: torch.Tensor,
     apc_mass: torch.Tensor,
     mask: torch.BoolTensor,
     *,
-    history_length: int,
-    top_v_positions: int,
-) -> CCDHistoryObservation:
-    """Intersect recent top-V positions and average their full distributions."""
+    dwell_depth: int,
+    focus_capacity: int,
+) -> FocusDwellObservation:
+    """Marginalize contrast distributions over the dwell window at each MASK.
+
+    This is the pure rectangular-kernel variant used both for its own ablation
+    and as the strict fallback of :func:`observe_focus_longtail`. Each position
+    contributes the average of its distributions over the current frame and
+    the ``dwell_depth`` most-recent frames it has been observed in. Only the
+    dwell counter decides eligibility; there is no explicit intersection of
+    top-focus position sets.
+    """
 
     if contrast_distribution.ndim != 2:
         raise ValueError("contrast_distribution must have shape [positions, vocab]")
@@ -1575,48 +1817,60 @@ def observe_ccd_history(
         or apc_mass.shape != expected_shape
         or mask.shape != expected_shape
     ):
-        raise ValueError("CCD per-position inputs must match distribution positions")
+        raise ValueError(
+            "Focus dwell per-position inputs must match distribution positions"
+        )
     if mask.dtype != torch.bool:
-        raise TypeError("CCD mask must be boolean")
-    if history_length < 1:
-        raise ValueError("history_length must be at least 1")
-    if top_v_positions < 1:
-        raise ValueError("top_v_positions must be at least 1")
+        raise TypeError("Focus dwell mask must be boolean")
+    if dwell_depth < 1:
+        raise ValueError("dwell_depth must be at least 1")
+    if focus_capacity < 1:
+        raise ValueError("focus_capacity must be at least 1")
     if not bool(torch.isfinite(contrast_distribution).all()):
-        raise FloatingPointError("CCD contrast distribution contains NaN or Inf")
+        raise FloatingPointError(
+            "Focus dwell contrast distribution contains NaN or Inf"
+        )
     if not bool(torch.isfinite(visual_distribution).all()):
-        raise FloatingPointError("CCD visual distribution contains NaN or Inf")
+        raise FloatingPointError(
+            "Focus dwell visual distribution contains NaN or Inf"
+        )
 
-    masked_positions = torch.nonzero(mask, as_tuple=True)[0]
-    if masked_positions.numel() == 0:
-        raise ValueError("Cannot observe CCD history without masked positions")
-    order = torch.argsort(
-        position_confidence[masked_positions],
-        descending=True,
-        stable=True,
+    current_positions = _current_focus_positions(
+        position_confidence, mask, focus_capacity
     )
-    retain = min(int(top_v_positions), int(masked_positions.numel()))
-    current_positions = masked_positions[order[:retain]]
-    current_snapshot = CCDHistorySnapshot(
-        positions=current_positions.detach().clone(),
-        distributions=contrast_distribution[current_positions].detach().clone(),
+    current_frame = make_focus_frame(
+        current_positions,
+        contrast_distribution[current_positions],
+        position_count,
     )
 
-    recent_history = list(history)[-int(history_length) :]
-    eligible_mask = torch.zeros_like(mask)
-    eligible_mask[current_positions] = True
-    for snapshot in recent_history:
-        if snapshot.distributions.ndim != 2:
-            raise ValueError("CCD history distributions must be two-dimensional")
-        if snapshot.distributions.shape[0] != snapshot.positions.numel():
-            raise ValueError("CCD history position/distribution counts must match")
-        if snapshot.distributions.shape[1] != contrast_distribution.shape[1]:
-            raise ValueError("CCD history vocabulary size changed between iterations")
-        if snapshot.positions.device != mask.device:
-            raise ValueError("CCD history and current mask must share a device")
-        membership = torch.zeros_like(mask)
-        membership[snapshot.positions] = True
-        eligible_mask &= membership
+    for frame in focus_frames:
+        if frame.distributions.ndim != 2:
+            raise ValueError("Focus frame distributions must be two-dimensional")
+        if frame.distributions.shape[0] != frame.positions.numel():
+            raise ValueError(
+                "Focus frame position/distribution counts must match"
+            )
+        if frame.distributions.shape[1] != contrast_distribution.shape[1]:
+            raise ValueError(
+                "Focus frame vocabulary size changed between iterations"
+            )
+        if frame.positions.device != mask.device:
+            raise ValueError(
+                "Focus frames and current mask must share a device"
+            )
+
+    recent_focus_frames = list(focus_frames)[-int(dwell_depth) :]
+    dwell_counter = compute_focus_dwell_counter(
+        focus_frames,
+        current_positions,
+        total_positions=position_count,
+    )
+    # See ``observe_focus_longtail`` for the warmup rationale: the gate
+    # equals ``1 + <stored frames>``, so the strict ``D >= dwell_depth + 1``
+    # requirement kicks in only after the ring buffer has been filled.
+    dwell_gate = 1 + len(recent_focus_frames)
+    eligible_mask = dwell_counter >= dwell_gate
 
     current_token = contrast_distribution.argmax(dim=-1)
     base_confidence = visual_distribution.gather(
@@ -1632,26 +1886,28 @@ def observe_ccd_history(
 
     eligible_positions = torch.nonzero(eligible_mask, as_tuple=True)[0]
     if eligible_positions.numel() > 0:
-        distributions = [contrast_distribution[eligible_positions].float()]
-        for snapshot in recent_history:
-            lookup = torch.full(
-                (position_count,),
-                -1,
-                dtype=torch.long,
-                device=mask.device,
-            )
-            lookup[snapshot.positions] = torch.arange(
-                snapshot.positions.numel(),
-                dtype=torch.long,
-                device=mask.device,
-            )
-            snapshot_rows = lookup[eligible_positions]
-            if bool((snapshot_rows < 0).any()):
-                raise RuntimeError("CCD intersection lost a historical position")
-            distributions.append(
-                snapshot.distributions[snapshot_rows].float()
-            )
-        marginalized = torch.stack(distributions, dim=0).mean(dim=0)
+        # Accumulate in the same order ``observe_focus_longtail`` uses
+        # (current, newest-stored-frame, ..., oldest-stored-frame). Sharing
+        # the reduction order makes both paths bit-exact when the long-tail
+        # activation is zero.
+        marginalized = contrast_distribution[eligible_positions].float().clone()
+        frame_count = 1
+        for frame in reversed(recent_focus_frames):
+            # Prefer the frame's precomputed inverse lookup (the common case
+            # for frames created via :func:`make_focus_frame`); raw frames
+            # fall back to the on-the-spot build path that mirrors the
+            # pre-P0 reference behaviour with no extra allocation ceremony.
+            lookup = frame.lookup
+            if lookup is None or lookup.device != mask.device:
+                lookup = _build_focus_lookup(frame.positions, position_count)
+            frame_rows = lookup[eligible_positions]
+            if bool((frame_rows < 0).any()):
+                raise RuntimeError(
+                    "Focus dwell window lost an eligible position"
+                )
+            marginalized = marginalized + frame.distributions[frame_rows].float()
+            frame_count += 1
+        marginalized = marginalized / float(frame_count)
         marginalized = marginalized / marginalized.sum(
             dim=-1, keepdim=True
         ).clamp_min(torch.finfo(torch.float32).tiny)
@@ -1671,14 +1927,15 @@ def observe_ccd_history(
             apc_mass[eligible_positions] * eligible_probs
         )
 
-    return CCDHistoryObservation(
-        current_snapshot=current_snapshot,
+    return FocusDwellObservation(
+        current_frame=current_frame,
         eligible_mask=eligible_mask,
+        dwell_counter=dwell_counter,
         marginal_token=marginal_token,
         marginal_entropy=marginal_entropy,
         base_confidence=base_confidence,
         contrast_confidence=contrast_confidence,
-        history_depth=len(recent_history),
+        dwell_depth=len(recent_focus_frames),
     )
 
 

@@ -81,17 +81,18 @@ class VCHDDecodeConfig:
     history_ema_decay: float = 0.7
     history_penalty_scale: float = 1.0
     history_anchor_min_consistent: int = 0
-    ccd_history_enabled: bool = False
-    ccd_history_length: int = 2
-    ccd_top_v_positions: int = 64
-    adaptive_temporal_enabled: bool = False
-    adaptive_temporal_loglogistic_scale: float = 3.20
-    adaptive_temporal_loglogistic_shape: float = 8.0
-    adaptive_temporal_loglogistic_offset: float = 1.0
-    adaptive_temporal_tail_mix_max: float = 1.0
-    adaptive_temporal_exposure_scale: float = 0.10
-    adaptive_temporal_relevance_scale: float = 0.01
-    adaptive_temporal_conflict_scale: float = 0.002
+    focus_dwell_enabled: bool = False
+    focus_dwell_depth: int = 2
+    focus_capacity: int = 64
+    focus_longtail_enabled: bool = False
+    focus_longtail_kernel_scale: float = 3.20
+    focus_longtail_kernel_shape: float = 8.0
+    focus_longtail_kernel_offset: float = 1.0
+    focus_longtail_mix_ceiling: float = 1.0
+    focus_longtail_exposure_tau: float = 0.10
+    focus_longtail_relevance_tau: float = 0.01
+    focus_longtail_conflict_tau: float = 0.002
+    focus_longtail_history_epsilon: float = 1.0e-4
     unified_trajectory_enabled: bool = False
     unified_trajectory_top_k: int = 4
     unified_trajectory_window_size: int = 64
@@ -126,6 +127,11 @@ class VCHDDecodeConfig:
     ccaw_pressure_scale: float = 1.0
     ccaw_expand_step: int = 8
     ccaw_shrink_step: int = 4
+    # Selects which pressure signal drives inverse_window target computation.
+    # "none" keeps the historical StrongShrink behaviour (raw per-step
+    # pressure). "ema" activates the previously-dormant pressure_ema field,
+    # smoothed with ccaw_pressure_ema_decay. Only consulted when
+    # ccaw_mode == "inverse_window"; legacy mode always uses its own EMA.
     ccaw_pressure_filter: str = "none"
 
     def validate(self) -> None:
@@ -189,59 +195,67 @@ class VCHDDecodeConfig:
             raise ValueError(
                 "history_anchor_min_consistent requires history_enabled"
             )
-        if self.ccd_history_length < 1:
-            raise ValueError("ccd_history_length must be at least 1")
-        if self.ccd_top_v_positions < 1:
-            raise ValueError("ccd_top_v_positions must be at least 1")
-        if not (
-            math.isfinite(
-                float(self.adaptive_temporal_loglogistic_scale)
-            )
-            and self.adaptive_temporal_loglogistic_scale > 0.0
-        ):
+        if not isinstance(self.focus_dwell_depth, int) or self.focus_dwell_depth < 1:
             raise ValueError(
-                "adaptive_temporal_loglogistic_scale must be finite and "
-                "positive"
+                f"focus_dwell_depth must be a positive int, got {self.focus_dwell_depth!r}"
+            )
+        if not isinstance(self.focus_capacity, int) or self.focus_capacity < 1:
+            raise ValueError(
+                f"focus_capacity must be a positive int, got {self.focus_capacity!r}"
             )
         if not (
             math.isfinite(
-                float(self.adaptive_temporal_loglogistic_shape)
+                float(self.focus_longtail_kernel_scale)
             )
-            and self.adaptive_temporal_loglogistic_shape > 1.0
+            and self.focus_longtail_kernel_scale > 0.0
         ):
             raise ValueError(
-                "adaptive_temporal_loglogistic_shape must be finite and "
-                "greater than 1"
+                "focus_longtail_kernel_scale must be finite and positive"
             )
         if not (
             math.isfinite(
-                float(self.adaptive_temporal_loglogistic_offset)
+                float(self.focus_longtail_kernel_shape)
             )
-            and self.adaptive_temporal_loglogistic_offset >= 0.0
+            and self.focus_longtail_kernel_shape > 1.0
         ):
             raise ValueError(
-                "adaptive_temporal_loglogistic_offset must be finite and "
-                "non-negative"
+                "focus_longtail_kernel_shape must be finite and greater than 1"
             )
         if not (
-            math.isfinite(float(self.adaptive_temporal_tail_mix_max))
-            and 0.0 <= self.adaptive_temporal_tail_mix_max <= 1.0
+            math.isfinite(
+                float(self.focus_longtail_kernel_offset)
+            )
+            and self.focus_longtail_kernel_offset >= 0.0
         ):
             raise ValueError(
-                "adaptive_temporal_tail_mix_max must be in [0, 1]"
+                "focus_longtail_kernel_offset must be finite and non-negative"
+            )
+        if not (
+            math.isfinite(float(self.focus_longtail_mix_ceiling))
+            and 0.0 <= self.focus_longtail_mix_ceiling <= 1.0
+        ):
+            raise ValueError(
+                "focus_longtail_mix_ceiling must be in [0, 1]"
+            )
+        if not (
+            math.isfinite(float(self.focus_longtail_history_epsilon))
+            and 0.0 < self.focus_longtail_history_epsilon < 1.0
+        ):
+            raise ValueError(
+                "focus_longtail_history_epsilon must be in (0, 1)"
             )
         for name, value in (
             (
-                "adaptive_temporal_exposure_scale",
-                self.adaptive_temporal_exposure_scale,
+                "focus_longtail_exposure_tau",
+                self.focus_longtail_exposure_tau,
             ),
             (
-                "adaptive_temporal_relevance_scale",
-                self.adaptive_temporal_relevance_scale,
+                "focus_longtail_relevance_tau",
+                self.focus_longtail_relevance_tau,
             ),
             (
-                "adaptive_temporal_conflict_scale",
-                self.adaptive_temporal_conflict_scale,
+                "focus_longtail_conflict_tau",
+                self.focus_longtail_conflict_tau,
             ),
         ):
             if not math.isfinite(float(value)) or float(value) <= 0.0:
@@ -408,46 +422,46 @@ class VCHDDecodeConfig:
             raise ValueError(
                 "counterfactual_exposure_flip_decay must be in [0, 1]"
             )
-        if self.ccd_history_enabled and self.history_enabled:
+        if self.focus_dwell_enabled and self.history_enabled:
             raise ValueError(
-                "ccd_history_enabled and history_enabled are isolated ablations"
+                "focus_dwell_enabled and history_enabled are isolated ablations"
             )
-        if self.ccd_history_enabled and self.ccaw_enabled:
+        if self.focus_dwell_enabled and self.ccaw_enabled:
             raise ValueError(
-                "ccd_history_enabled and ccaw_enabled are isolated ablations"
+                "focus_dwell_enabled and ccaw_enabled are isolated ablations"
             )
-        if self.adaptive_temporal_enabled and (
+        if self.focus_longtail_enabled and (
             self.history_enabled
-            or self.ccd_history_enabled
+            or self.focus_dwell_enabled
             or self.unified_trajectory_enabled
             or self.counterfactual_exposure_mode != "off"
-            or self.ccaw_enabled
         ):
             raise ValueError(
-                "adaptive temporal posterior is isolated from history, CCD, "
-                "unified trajectory, counterfactual exposure, and CCAW"
+                "focus long-tail posterior is isolated from sparse history, "
+                "focus dwell, unified trajectory, and counterfactual "
+                "exposure (CCAW is allowed as a scheduling layer)"
             )
         if (
             self.counterfactual_exposure_mode != "off"
             and (
                 self.history_enabled
-                or self.ccd_history_enabled
+                or self.focus_dwell_enabled
                 or self.ccaw_enabled
             )
         ):
             raise ValueError(
                 "counterfactual exposure is isolated from sparse history, "
-                "CCD history, and CCAW ablations"
+                "focus dwell, and CCAW ablations"
             )
         if self.unified_trajectory_enabled and (
             self.history_enabled
-            or self.ccd_history_enabled
+            or self.focus_dwell_enabled
             or self.counterfactual_exposure_mode != "off"
             or self.ccaw_enabled
         ):
             raise ValueError(
-                "unified trajectory is isolated from legacy history, CCD, "
-                "counterfactual exposure, and CCAW ablations"
+                "unified trajectory is isolated from legacy history, focus "
+                "dwell, counterfactual exposure, and CCAW ablations"
             )
         if self.ccaw_qualified_budget < 1:
             raise ValueError("ccaw_qualified_budget must be at least 1")

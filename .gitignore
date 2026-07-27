@@ -74,3 +74,8 @@
 /LaViDa/images/
 /LaViDa/**/__pycache__/
 /LaViDa/**/.cache/
+
+# Reported benchmark artifacts (explicit allow; general logs/ still ignored).
+!/LaViDa/eval/reported_results/
+!/LaViDa/eval/reported_results/**
+

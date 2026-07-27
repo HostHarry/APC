@@ -1,0 +1,257 @@
+{
+  "runs": {
+    "swd": {
+      "dev": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/swd/20260724_230559_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 36.0,
+        "boxed_all": 34.67,
+        "official_mcq": 38.3,
+        "boxed_mcq": 36.88,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 54,
+          "boxed_all": 52,
+          "official_mcq": 54,
+          "boxed_mcq": 52,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 16,
+          "none": 29,
+          "boxed_letter": 95,
+          "open_official": 9,
+          "option_text": 1
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/swd__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/swd/20260724_230559_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 39.67,
+        "boxed_all": 33.33,
+        "official_mcq": 41.68,
+        "boxed_mcq": 34.95,
+        "official_open": 7.55,
+        "boxed_open": 7.55,
+        "counts": {
+          "official_all": 357,
+          "boxed_all": 300,
+          "official_mcq": 353,
+          "boxed_mcq": 296,
+          "official_open": 4,
+          "boxed_open": 4
+        },
+        "methods": {
+          "boxed_letter": 580,
+          "letter": 49,
+          "none": 208,
+          "option_text": 4,
+          "open_official": 48,
+          "paren": 5,
+          "boxed_open": 5,
+          "option_text_multi": 1
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/swd__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 39.14,
+        "boxed_all": 33.52,
+        "official_mcq": 41.19,
+        "boxed_mcq": 35.22,
+        "official_open": 6.45,
+        "boxed_open": 6.45,
+        "delta_all_pp": -5.62,
+        "methods": {
+          "letter": 65,
+          "none": 237,
+          "boxed_letter": 675,
+          "open_official": 57,
+          "option_text": 5,
+          "paren": 5,
+          "boxed_open": 5,
+          "option_text_multi": 1
+        }
+      }
+    },
+    "psp": {
+      "dev": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/psp/20260724_233942_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 40.67,
+        "boxed_all": 36.0,
+        "official_mcq": 43.26,
+        "boxed_mcq": 38.3,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 61,
+          "boxed_all": 54,
+          "official_mcq": 61,
+          "boxed_mcq": 54,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 13,
+          "boxed_letter": 108,
+          "none": 19,
+          "open_official": 8,
+          "boxed_open": 1,
+          "option_text": 1
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/psp__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/psp/20260724_233942_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 38.67,
+        "boxed_all": 35.89,
+        "official_mcq": 40.61,
+        "boxed_mcq": 37.66,
+        "official_open": 7.55,
+        "boxed_open": 7.55,
+        "counts": {
+          "official_all": 348,
+          "boxed_all": 323,
+          "official_mcq": 344,
+          "boxed_mcq": 319,
+          "official_open": 4,
+          "boxed_open": 4
+        },
+        "methods": {
+          "boxed_letter": 625,
+          "letter": 62,
+          "none": 147,
+          "unclosed_boxed_letter": 1,
+          "option_text": 8,
+          "paren": 2,
+          "option_text_multi": 2,
+          "open_official": 52,
+          "boxed_open": 1
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/psp__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 38.95,
+        "boxed_all": 35.9,
+        "official_mcq": 40.99,
+        "boxed_mcq": 37.75,
+        "official_open": 6.45,
+        "boxed_open": 6.45,
+        "delta_all_pp": -3.05,
+        "methods": {
+          "letter": 75,
+          "boxed_letter": 733,
+          "none": 166,
+          "open_official": 60,
+          "boxed_open": 2,
+          "option_text": 9,
+          "unclosed_boxed_letter": 1,
+          "paren": 2,
+          "option_text_multi": 2
+        }
+      }
+    },
+    "psp_vrg": {
+      "dev": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/psp_vrg/20260727_060100_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 38.0,
+        "boxed_all": 36.67,
+        "official_mcq": 40.43,
+        "boxed_mcq": 39.01,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 57,
+          "boxed_all": 55,
+          "official_mcq": 57,
+          "boxed_mcq": 55,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 17,
+          "boxed_letter": 108,
+          "none": 15,
+          "open_official": 8,
+          "boxed_open": 1,
+          "option_text": 1
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/psp_vrg__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/APC_43133/LaViDa/eval/reported_results/mmmu/psp_vrg/20260727_060100_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 39.78,
+        "boxed_all": 35.67,
+        "official_mcq": 41.68,
+        "boxed_mcq": 37.31,
+        "official_open": 9.43,
+        "boxed_open": 9.43,
+        "counts": {
+          "official_all": 358,
+          "boxed_all": 321,
+          "official_mcq": 353,
+          "boxed_mcq": 316,
+          "official_open": 5,
+          "boxed_open": 5
+        },
+        "methods": {
+          "option_text": 5,
+          "letter": 51,
+          "none": 164,
+          "boxed_letter": 620,
+          "option_text_multi": 3,
+          "paren": 4,
+          "open_official": 47,
+          "boxed_open": 6
+        },
+        "detail": "eval/logs/mmmu_boxed_first_rescore_20260727/theirs/psp_vrg__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 39.52,
+        "boxed_all": 35.81,
+        "official_mcq": 41.5,
+        "boxed_mcq": 37.55,
+        "official_open": 8.06,
+        "boxed_open": 8.06,
+        "delta_all_pp": -3.71,
+        "methods": {
+          "letter": 68,
+          "boxed_letter": 728,
+          "none": 179,
+          "open_official": 55,
+          "boxed_open": 7,
+          "option_text": 6,
+          "option_text_multi": 3,
+          "paren": 4
+        }
+      }
+    }
+  }
+}

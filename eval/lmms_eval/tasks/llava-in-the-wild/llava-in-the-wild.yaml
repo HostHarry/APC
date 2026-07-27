@@ -1,6 +1,6 @@
-dataset_path: lmms-lab/llava-bench-in-the-wild
-dataset_kwargs:
-  token: True
+# Local HF datasets cache (pre-downloaded). Avoids Hub token / offline Hub lookup.
+dataset_path: /autodl-fs/data/hf_home/datasets/lmms-lab___llava-bench-in-the-wild/default/0.0.0/2c88d835d509b1372066db42ab7799255dbe9da2
+dataset_kwargs: {}
 task: "llava_in_the_wild"
 test_split: train
 output_type: generate_until

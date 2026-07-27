@@ -70,21 +70,76 @@ def test_infer_visual_mask_from_expanded_ids():
     assert mask.tolist() == [False, True, True, False, True, False]
 
 
-def test_paired_prefix_bias_is_bidirectional_only_inside_prompt():
+def test_paired_prefix_bias_only_blocks_prompt_to_response():
+    """``cached=False``: response stays bidirectional (single-forward MDM)."""
+
     visual_mask = torch.tensor([False, True, False, False, False])
     bias = build_paired_prefix_attention_bias(
         visual_mask,
         prompt_length=3,
+        cached=False,
     )
     visual_blocked = bias[0, 0] < -1.0e20
     assert visual_blocked[:3, 3:].all()
     assert not visual_blocked[:3, :3].any()
-    assert visual_blocked[3, 4]
-    assert not visual_blocked[4].any()
+    # LLaDA is a masked diffusion model, so the response block must remain
+    # bidirectional -- response queries can attend to any prompt or response
+    # key, including keys with higher index than the query.
+    assert not visual_blocked[3:, :].any()
 
     ablated_blocked = bias[1, 0] < -1.0e20
     assert ablated_blocked[0, 1]
     assert ablated_blocked[3, 1]
+    assert ablated_blocked[4, 1]
+    assert not ablated_blocked[1, 1]
+    assert not ablated_blocked[3, 3]
+    assert not ablated_blocked[3, 4]
+    assert not ablated_blocked[4, 3]
+
+
+def test_paired_prefix_bias_cached_applies_response_only_causal():
+    """``cached=True`` matches LaViDa cached-prefix (bidir prompt, causal response).
+
+    LaViDa's cached generate.py path attends bidirectionally within the prompt
+    (so the prefill KVs match a full-sequence forward) but runs the response
+    causally on top of the cached prompt. We assert that (i) prompt<->prompt
+    attention is unrestricted, (ii) prompt queries still cannot see response
+    keys (Prefix-LM leak prevention), and (iii) response queries are causal
+    within the response block.
+    """
+
+    visual_mask = torch.tensor([False, True, False, False, False])
+    prompt_len = 3
+    bias = build_paired_prefix_attention_bias(
+        visual_mask,
+        prompt_length=prompt_len,
+        cached=True,
+    )
+    visual_blocked = bias[0, 0] < -1.0e20
+    # (i) Prompt<->prompt block must be fully permissive.
+    assert not visual_blocked[:prompt_len, :prompt_len].any()
+    # (ii) Prompt cannot attend to response.
+    assert visual_blocked[:prompt_len, prompt_len:].all()
+    # (iii) Response is causal within response, still sees all prompt keys.
+    positions = torch.arange(visual_mask.numel())
+    within_response = (positions[:, None] >= prompt_len) & (
+        positions[None, :] >= prompt_len
+    )
+    upper = positions[None, :] > positions[:, None]
+    expected_response_block = within_response & upper
+    assert torch.equal(
+        visual_blocked[prompt_len:, prompt_len:],
+        expected_response_block[prompt_len:, prompt_len:],
+    )
+    # Response can freely see the prompt.
+    assert not visual_blocked[prompt_len:, :prompt_len].any()
+
+    ablated_blocked = bias[1, 0] < -1.0e20
+    # Ablation still blocks non-visual queries from the visual key at index 1.
+    assert ablated_blocked[0, 1]
+    assert ablated_blocked[3, 1]
+    assert ablated_blocked[4, 1]
+    # Visual query still sees itself on both branches.
     assert not ablated_blocked[1, 1]
 
 
@@ -308,6 +363,15 @@ class _PrefixCacheAttentionModel:
 
 
 def test_paired_prefix_prompt_cache_matches_full_prefix_forward():
+    """Cached and non-cached paired forwards must be numerically equivalent.
+
+    Both regimes now use ``build_paired_prefix_attention_bias(cached=False)``
+    (bidirectional response over the cached prompt), matching LaViDa's actual
+    trained inference regime. The cached path adds prefill KVs and per-decode
+    reuse for efficiency, but its logits must not diverge from the
+    non-cached full-sequence forward.
+    """
+
     torch.manual_seed(7)
     full_model = _PrefixCacheAttentionModel()
     cached_model = _PrefixCacheAttentionModel(
@@ -367,9 +431,8 @@ def test_paired_prefix_prompt_cache_matches_full_prefix_forward():
     ]
 
 
-def test_real_llada_honors_paired_bias_and_prompt_cache_parity():
-    torch.manual_seed(17)
-    config = ModelConfig(
+def _tiny_llada_config():
+    return ModelConfig(
         d_model=16,
         n_heads=4,
         n_layers=2,
@@ -384,7 +447,25 @@ def test_real_llada_honors_paired_bias_and_prompt_cache_parity():
         init_device="cpu",
         init_std=0.2,
     )
-    model = LLaDAModel(config, init_params=True).eval()
+
+
+def test_real_llada_honors_paired_bias_and_prompt_cache_parity():
+    """Paired cached decode must match paired non-cached forward for LaViDa.
+
+    LaViDa's LLaDA backbone was trained with a bidirectional cached prefix
+    (the paper's numbers were collected under Bug-A SDPA that silently
+    ignored the auto-generated causal bias). ``paired_forward`` therefore
+    passes ``build_paired_prefix_attention_bias(cached=False)`` on both the
+    cached and non-cached paths, and the auto-causal safeguard in
+    ``LLaDAModel.forward`` is suppressed on any bias-less call. Under this
+    regime the cached and non-cached paired outputs must be numerically
+    equivalent for both branches; a regression that re-introduces
+    response-causal cached semantics (or drops the auto-causal suppression)
+    would break this parity.
+    """
+
+    torch.manual_seed(17)
+    model = LLaDAModel(_tiny_llada_config(), init_params=True).eval()
     prompt_len = 3
     response_len = 3
     prompt_ids = torch.tensor([[0, 1, 2]])
@@ -430,6 +511,110 @@ def test_real_llada_honors_paired_bias_and_prompt_cache_parity():
     assert torch.allclose(
         cached_output.ablated,
         full_output.ablated,
+        atol=1.0e-5,
+        rtol=1.0e-4,
+    )
+
+
+def test_llada_kv_cache_does_not_apply_legacy_causal_bias():
+    """No user bias => cached decode must NOT get the legacy auto-causal.
+
+    ``LLaDAModel.forward`` legally synthesises a causal ``attention_bias``
+    whenever ``past_key_values`` is supplied, purely as a numerical safeguard
+    for ``F.scaled_dot_product_attention`` (see the ``epwalsh`` comment). For
+    LLaDA -- a bidirectional masked diffusion model whose LaViDa checkpoint
+    was trained under a Bug-A SDPA path that silently ignored that bias --
+    honouring the auto-causal at inference time collapses cached MMMU decode
+    to almost-entirely empty / ``<end`` outputs (verified in
+    ``mmmu_dev.pre_narrow_fix_20260727``). The current suppression restores
+    bidirectional cached semantics; a bias-less call must therefore behave
+    exactly like an explicit zero-bias call.
+    """
+
+    torch.manual_seed(3)
+    model = LLaDAModel(_tiny_llada_config(), init_params=True).eval()
+    prompt_embeds = model.transformer.wte(torch.tensor([[0, 1, 2]]))
+    response_embeds = model.transformer.wte(torch.tensor([[3, 4, 5]]))
+    total_len = prompt_embeds.shape[1] + response_embeds.shape[1]
+    zero_bias = torch.zeros(1, 1, total_len, total_len, dtype=torch.float32)
+
+    with torch.inference_mode():
+        prefill = model(None, input_embeddings=prompt_embeds, use_cache=True)
+        no_bias = model(
+            None,
+            input_embeddings=response_embeds,
+            past_key_values=prefill.attn_key_values,
+            use_cache=False,
+        )
+        with_zero_bias = model(
+            None,
+            input_embeddings=response_embeds,
+            attention_bias=zero_bias,
+            past_key_values=prefill.attn_key_values,
+            use_cache=False,
+        )
+
+    assert torch.allclose(
+        no_bias.logits, with_zero_bias.logits, atol=1.0e-5, rtol=1.0e-4
+    )
+
+
+def test_llada_forward_ignores_auto_causal_bias_without_cache():
+    """Same-batch parity: bias-less forward equals zero-bias forward."""
+
+    torch.manual_seed(4)
+    model = LLaDAModel(_tiny_llada_config(), init_params=True).eval()
+    ids = torch.tensor([[0, 1, 2, 3, 4]])
+    embeds = model.transformer.wte(ids)
+    zero_bias = torch.zeros(1, 1, ids.shape[1], ids.shape[1], dtype=torch.float32)
+
+    with torch.inference_mode():
+        no_bias = model(None, input_embeddings=embeds, use_cache=False)
+        with_zero_bias = model(
+            None,
+            input_embeddings=embeds,
+            attention_bias=zero_bias,
+            use_cache=False,
+        )
+
+    assert torch.allclose(
+        no_bias.logits, with_zero_bias.logits, atol=1.0e-5, rtol=1.0e-4
+    )
+
+
+def test_llada_prefix_lm_bias_leaves_response_bidirectional():
+    """Response queries must be able to attend to later response keys."""
+
+    torch.manual_seed(9)
+    model = LLaDAModel(_tiny_llada_config(), init_params=True).eval()
+    prompt_len = 3
+    response_len = 3
+    all_ids = torch.tensor([[0, 1, 2, 3, 4, 5]])
+    full_embeds = model.transformer.wte(all_ids)
+    visual_mask = torch.zeros(prompt_len + response_len, dtype=torch.bool)
+    visual_mask[1] = True
+    bias = build_paired_prefix_attention_bias(
+        visual_mask, prompt_length=prompt_len
+    )[:1]
+
+    swapped_embeds = full_embeds.clone()
+    swapped_embeds[0, -1] = full_embeds[0, prompt_len]
+
+    with torch.inference_mode():
+        base = model(
+            None, input_embeddings=full_embeds, attention_bias=bias, use_cache=False
+        )
+        swapped = model(
+            None,
+            input_embeddings=swapped_embeds,
+            attention_bias=bias,
+            use_cache=False,
+        )
+
+    first_response = prompt_len
+    assert not torch.allclose(
+        base.logits[:, first_response],
+        swapped.logits[:, first_response],
         atol=1.0e-5,
         rtol=1.0e-4,
     )

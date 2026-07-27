@@ -34,22 +34,23 @@ case "$MODE" in
     ;;
   vchd)
     # VCHD pops block/step schedule; length is controlled by max_new_tokens.
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    # alpha/beta: CD-APC contrast coeffs (paper default α=0.25, β=0.1).
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_ccaw)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_prefix)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_prefix_cache)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_ccaw_prefix)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_ccaw_prefix_cache)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   *)
     echo "Unknown MODE=$MODE" >&2

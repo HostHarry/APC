@@ -67,8 +67,33 @@ def build_paired_prefix_attention_bias(
     visual_mask: torch.BoolTensor,
     *,
     prompt_length: int,
+    cached: bool = False,
 ) -> torch.FloatTensor:
-    """Build visual/ablated Prefix-LM bias with causal response queries."""
+    """Build visual/ablated Prefix-LM bias for a masked-diffusion response.
+
+    Two regimes, matching LaViDa's own reference behaviour:
+
+    * ``cached=False`` (single-forward Prefix-LM, no ``past_key_values``): the
+      response block attends bidirectionally over both prompt and response
+      tokens (``prefix_lm_dllm`` in ``modeling_llada.py`` lets every response
+      query see every key). The only Prefix-LM restriction we impose is that
+      *prompt* queries may not attend to *response* keys, so the future
+      response never leaks into the cached prompt KV.
+
+    * ``cached=True`` (paired-prefix prompt KV cache decode): LaViDa's cached
+      generate.py path deliberately turns the response block causal on top of
+      a bidirectional prompt cache. This is documented in the upstream
+      ``visual_guided_logits`` (``llava/decoding/thinking.py`` on the
+      ``hostharry/apc:43133-lavida`` branch) as "Match LaViDa's cached prefix
+      path, which becomes causal over the response tokens once past keys are
+      supplied." We therefore add response-only causal (``k > q`` within the
+      response block) on top of the ``cached=False`` bias. Prompt<->prompt
+      attention stays bidirectional so that a full-sequence forward with this
+      bias produces the same prompt KVs as the paired prefill call.
+
+    Ablation still blocks non-visual queries from visual keys on branch 1 in
+    both regimes.
+    """
 
     seq_len = int(visual_mask.numel())
     prompt_length = int(prompt_length)
@@ -80,10 +105,17 @@ def build_paired_prefix_attention_bias(
     positions = torch.arange(seq_len, device=visual_mask.device)
     query = positions[:, None]
     key = positions[None, :]
-    blocked = ((query < prompt_length) & (key >= prompt_length)) | (
-        (query >= prompt_length) & (key > query)
-    )
-    bias[:, 0].masked_fill_(blocked, torch.finfo(torch.float32).min)
+    prompt_to_response = (query < prompt_length) & (key >= prompt_length)
+    bias[:, 0].masked_fill_(prompt_to_response, torch.finfo(torch.float32).min)
+    if cached:
+        # Within the response block only, additionally block ``k > q`` so the
+        # response is causal on top of a bidirectional prompt. Prompt<->prompt
+        # attention stays unrestricted so the reference full-sequence forward
+        # produces the same KVs as the prefill call, and response queries can
+        # still attend to every prompt key.
+        within_response = (query >= prompt_length) & (key >= prompt_length)
+        response_causal = within_response & (key > query)
+        bias[:, 0].masked_fill_(response_causal, torch.finfo(torch.float32).min)
     return bias
 
 
@@ -562,10 +594,22 @@ class LaViDaVisualAccessAdapter:
             seq_len, dtype=torch.bool, device=tokens.device
         )
         full_visual_mask[:prompt_len] = self.visual_mask.to(device=tokens.device)
+        # LaViDa's LLaDA base checkpoint was trained (and its paper numbers
+        # collected) with an SDPA path that silently ignored the additive
+        # attention bias (Bug A). That accidentally kept both the cached and
+        # non-cached prefix-LM decode paths fully bidirectional. Once Bug A
+        # is fixed we must be careful not to *add* a response-causal mask on
+        # the cached path, or else the paired forward diverges from the
+        # regime the weights were tuned for. We therefore always request the
+        # bidirectional ``cached=False`` bias here; the ``cached=True`` branch
+        # remains available in ``build_paired_prefix_attention_bias`` for AR
+        # backends (e.g. Dream) that genuinely need response-causal cached
+        # decode.
         branch_bias = (
             build_paired_prefix_attention_bias(
                 full_visual_mask,
                 prompt_length=prompt_len,
+                cached=False,
             )
             if self.prefix_lm
             else build_paired_attention_bias_from_mask(full_visual_mask)

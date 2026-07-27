@@ -1,0 +1,16 @@
+{
+  "n": 90,
+  "judged_ok": 90,
+  "failed_or_skipped": 0,
+  "gpt_eval_llava_all": 80.3,
+  "gpt_eval_llava_conv": 69.7,
+  "gpt_eval_llava_detail": 74.1,
+  "gpt_eval_llava_complex": 94.5,
+  "mean_scores_all": [
+    6.556,
+    5.267
+  ],
+  "model": "gpt-4o",
+  "source_samples": "/root/autodl-tmp/LaViDa/eval/logs/llavabench_coco_ours_20260727/vchd_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_141104_samples_llava_bench_coco.jsonl",
+  "judged_samples": "/root/autodl-tmp/LaViDa/eval/logs/llavabench_coco_ours_20260727/vchd_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_141104_samples_llava_bench_coco_judged_gpt4o.jsonl"
+}

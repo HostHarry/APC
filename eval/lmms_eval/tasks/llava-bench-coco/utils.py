@@ -27,11 +27,12 @@ with open(Path(__file__).parent / "llava-bench-coco.yaml", "r") as f:
 
     config = yaml.safe_load("".join(safe_data))
 
-GPT_EVAL_MODEL_NAME = config["metadata"]["gpt_eval_model_name"]
-
-GPT_EVAL_MODEL_NAME = config["metadata"]["gpt_eval_model_name"]
+GPT_EVAL_MODEL_NAME = os.getenv(
+    "LLAVA_JUDGE_MODEL", config["metadata"]["gpt_eval_model_name"]
+)
 
 API_TYPE = os.getenv("API_TYPE", "openai")
+SKIP_JUDGE = os.getenv("LLAVA_JUDGE_SKIP", "0") == "1"
 
 if API_TYPE == "openai":
     API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
@@ -136,8 +137,13 @@ def llava_process_results(doc, result):
         role = rule.get("role", "user")
         content = f"[Context]\n{context}\n\n" f"[Question]\n{question}\n\n" f"[{role} 1]\n{ans1}\n\n[End of {role} 1]\n\n" f"[{role} 2]\n{ans2}\n\n[End of {role} 2]\n\n" f"[System]\n{prompt}\n\n"
 
-        review, model_name = get_eval(content, 1024)
-        scores = parse_score(review)
+        if SKIP_JUDGE:
+            review = "Judge deferred; prediction saved for offline scoring."
+            model_name = "deferred"
+            scores = [-999, -999]
+        else:
+            review, model_name = get_eval(content, 1024)
+            scores = parse_score(review)
     except Exception as e:
         eval_logger.error(f"Error for Question ID: {doc.get('question_id', 'Unknown')}: {e}")
         review = "Failed to Get a Proper Review."
@@ -179,6 +185,11 @@ def llava_all_aggregation(results):
 
 
 def llava_aggregation(results, category):
+    if SKIP_JUDGE:
+        eval_logger.info(
+            "LLaVA-Bench judge deferred; predictions are available in sample logs."
+        )
+        return None
     try:
         scores = []
         for result in results:

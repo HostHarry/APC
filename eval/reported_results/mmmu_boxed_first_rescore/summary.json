@@ -1,0 +1,261 @@
+{
+  "runs": {
+    "mmmu_dev_val_full/original": {
+      "dev": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/mc_aligned_ours_20260727/mmmu_dev_val_full/original/lavida-ckpts__lavida-llada-reason/20260727_190421_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 24.67,
+        "boxed_all": 36.0,
+        "official_mcq": 26.24,
+        "boxed_mcq": 38.3,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 37,
+          "boxed_all": 54,
+          "official_mcq": 37,
+          "boxed_mcq": 54,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 10,
+          "boxed_letter": 110,
+          "none": 21,
+          "open_official": 8,
+          "boxed_open": 1
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu_dev_val_full__original__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/mc_aligned_ours_20260727/mmmu_dev_val_full/original/lavida-ckpts__lavida-llada-reason/20260727_190421_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 31.78,
+        "boxed_all": 35.78,
+        "official_mcq": 33.29,
+        "boxed_mcq": 37.54,
+        "official_open": 7.55,
+        "boxed_open": 7.55,
+        "counts": {
+          "official_all": 286,
+          "boxed_all": 322,
+          "official_mcq": 282,
+          "boxed_mcq": 318,
+          "official_open": 4,
+          "boxed_open": 4
+        },
+        "methods": {
+          "boxed_letter": 631,
+          "letter": 59,
+          "none": 144,
+          "paren": 3,
+          "option_text": 8,
+          "option_text_multi": 2,
+          "open_official": 52,
+          "boxed_open": 1
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu_dev_val_full__original__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 30.76,
+        "boxed_all": 35.81,
+        "official_mcq": 32.29,
+        "boxed_mcq": 37.65,
+        "official_open": 6.45,
+        "boxed_open": 6.45,
+        "delta_all_pp": 5.05,
+        "methods": {
+          "letter": 69,
+          "boxed_letter": 741,
+          "none": 165,
+          "open_official": 60,
+          "boxed_open": 2,
+          "paren": 3,
+          "option_text": 8,
+          "option_text_multi": 2
+        }
+      }
+    },
+    "mmmu_dev_val_full/vchd_ccaw_prefix_cache": {
+      "dev": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/mc_aligned_ours_20260727/mmmu_dev_val_full/vchd_ccaw_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_194238_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 24.0,
+        "boxed_all": 39.33,
+        "official_mcq": 25.53,
+        "boxed_mcq": 41.84,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 36,
+          "boxed_all": 59,
+          "official_mcq": 36,
+          "boxed_mcq": 59,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 10,
+          "boxed_letter": 107,
+          "none": 20,
+          "open_official": 8,
+          "option_text": 2,
+          "paren": 1,
+          "boxed_open": 1,
+          "option_text_multi": 1
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu_dev_val_full__vchd_ccaw_prefix_cache__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/mc_aligned_ours_20260727/mmmu_dev_val_full/vchd_ccaw_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_194238_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 29.44,
+        "boxed_all": 34.33,
+        "official_mcq": 30.58,
+        "boxed_mcq": 35.77,
+        "official_open": 11.32,
+        "boxed_open": 11.32,
+        "counts": {
+          "official_all": 265,
+          "boxed_all": 309,
+          "official_mcq": 259,
+          "boxed_mcq": 303,
+          "official_open": 6,
+          "boxed_open": 6
+        },
+        "methods": {
+          "boxed_letter": 619,
+          "letter": 48,
+          "none": 166,
+          "option_text": 8,
+          "paren": 4,
+          "open_official": 49,
+          "boxed_open": 4,
+          "option_text_multi": 2
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu_dev_val_full__vchd_ccaw_prefix_cache__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 28.67,
+        "boxed_all": 35.05,
+        "official_mcq": 29.86,
+        "boxed_mcq": 36.64,
+        "official_open": 9.68,
+        "boxed_open": 9.68,
+        "delta_all_pp": 6.38,
+        "methods": {
+          "letter": 58,
+          "boxed_letter": 726,
+          "none": 186,
+          "open_official": 57,
+          "option_text": 10,
+          "paren": 5,
+          "boxed_open": 5,
+          "option_text_multi": 3
+        }
+      }
+    },
+    "mmmu/vchd_prefix_cache": {
+      "dev": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/lavida_llada_bidir_fix_20260727_060142/mmmu/vchd_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_060150_samples_mmmu_dev.jsonl",
+        "n_all": 150,
+        "n_mcq": 141,
+        "n_open": 9,
+        "official_all": 22.0,
+        "boxed_all": 38.67,
+        "official_mcq": 23.4,
+        "boxed_mcq": 41.13,
+        "official_open": 0.0,
+        "boxed_open": 0.0,
+        "counts": {
+          "official_all": 33,
+          "boxed_all": 58,
+          "official_mcq": 33,
+          "boxed_mcq": 58,
+          "official_open": 0,
+          "boxed_open": 0
+        },
+        "methods": {
+          "letter": 17,
+          "boxed_letter": 102,
+          "none": 21,
+          "open_official": 8,
+          "unclosed_boxed_letter": 1,
+          "boxed_open": 1
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu__vchd_prefix_cache__dev.jsonl"
+      },
+      "val": {
+        "path": "/root/autodl-tmp/LaViDa/eval/logs/lavida_llada_bidir_fix_20260727_060142/mmmu/vchd_prefix_cache/lavida-ckpts__lavida-llada-reason/20260727_060150_samples_mmmu_val.jsonl",
+        "n_all": 900,
+        "n_mcq": 847,
+        "n_open": 53,
+        "official_all": 31.78,
+        "boxed_all": 35.44,
+        "official_mcq": 33.18,
+        "boxed_mcq": 37.07,
+        "official_open": 9.43,
+        "boxed_open": 9.43,
+        "counts": {
+          "official_all": 286,
+          "boxed_all": 319,
+          "official_mcq": 281,
+          "boxed_mcq": 314,
+          "official_open": 5,
+          "boxed_open": 5
+        },
+        "methods": {
+          "none": 180,
+          "letter": 60,
+          "boxed_letter": 588,
+          "unclosed_boxed_letter": 3,
+          "boxed_text": 1,
+          "paren": 5,
+          "open_official": 46,
+          "option_text": 5,
+          "boxed_open": 7,
+          "option_text_multi": 5
+        },
+        "detail": "/root/autodl-tmp/LaViDa/eval/logs/mmmu_boxed_first_rescore_20260727/mmmu__vchd_prefix_cache__val.jsonl"
+      },
+      "weighted": {
+        "n_all": 1050,
+        "n_mcq": 988,
+        "n_open": 62,
+        "official_all": 30.38,
+        "boxed_all": 35.9,
+        "official_mcq": 31.78,
+        "boxed_mcq": 37.65,
+        "official_open": 8.06,
+        "boxed_open": 8.06,
+        "delta_all_pp": 5.52,
+        "methods": {
+          "letter": 77,
+          "boxed_letter": 690,
+          "none": 201,
+          "open_official": 54,
+          "unclosed_boxed_letter": 4,
+          "boxed_open": 8,
+          "boxed_text": 1,
+          "paren": 5,
+          "option_text": 5,
+          "option_text_multi": 5
+        }
+      }
+    }
+  }
+}

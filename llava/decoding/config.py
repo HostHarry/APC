@@ -43,7 +43,7 @@ class VCHDDecodeConfig:
     text_vocab_size: Optional[int] = None
     forbidden_token_ids: Tuple[int, ...] = ()
 
-    alpha: float = 0.5
+    alpha: float = 0.25
     beta: float = 0.1
     jsd_epsilon: float = 1.0e-8
 

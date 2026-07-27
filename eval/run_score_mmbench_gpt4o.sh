@@ -11,7 +11,7 @@ set -euo pipefail
 
 ########################################
 # >>> put credentials here <<<
-OPENAI_API_KEY="${OPENAI_API_KEY:-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}"   # e.g. sk-...
+OPENAI_API_KEY="${OPENAI_API_KEY:-REPLACE_WITH_YOUR_OPENAI_API_KEY}"   # e.g. sk-...
 OPENAI_API_URL="${OPENAI_API_URL:-https://api.openai.com/v1/chat/completions}"
 # If your provider uses a base URL without /chat/completions, set full chat URL above.
 OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o}"

@@ -1286,8 +1286,27 @@ class LLaDAModel(nn.Module):
         # shape: (batch_size, seq_len, d_model)
         x = self.transformer.emb_drop(x)  # type: ignore
 
+        # Track whether the caller actually supplied a bias/mask. The block
+        # below may synthesise a causal bias just to keep KV-cache numerics
+        # stable in ``F.scaled_dot_product_attention`` (a legacy safeguard from
+        # the AR era and OLMo's upstream reference). For LLaDA -- a masked
+        # diffusion model whose base LaViDa checkpoint was trained and
+        # published under an SDPA path that silently *ignored* the additive
+        # bias (Bug A) -- honouring that auto-generated causal bias at
+        # inference time collapses cached decode to empty / ``<end`` tokens.
+        # We therefore keep the merge logic (so ALiBi, padding, and any
+        # explicit user bias still flow through), but at the end suppress any
+        # bias the caller did not actually ask for, including when it was only
+        # synthesised because ``past_key_values`` was supplied. This preserves
+        # LaViDa's bidirectional training/inference regime and matches the
+        # accidental behaviour the paper's numbers were reported under.
+        caller_supplied_bias = attention_bias is not None
+        caller_supplied_padding = (
+            attention_mask is not None and (attention_mask == 0).sum() > 0
+        )
+
         # Transform the attention mask into what the blocks expect.
-        if attention_mask is not None and (attention_mask==0).sum()>0:
+        if caller_supplied_padding:
             # shape: (batch_size, 1, 1, seq_len)
             attention_mask = attention_mask.to(dtype=torch.float).view(batch_size, -1)[:, None, None, :]
             attention_mask = (1.0 - attention_mask) * torch.finfo(attention_mask.dtype).min
@@ -1329,6 +1348,18 @@ class LLaDAModel(nn.Module):
                 # `F.scaled_dot_product_attention()` doesn't handle -inf like you'd expect, instead
                 # it can produce NaNs.
                 ensure_finite_(attention_bias, check_neg_inf=True, check_pos_inf=False)
+
+        if not (caller_supplied_bias or caller_supplied_padding or self.config.alibi):
+            # No user bias, no padding, and no ALiBi -> preserve LLaDA's
+            # masked diffusion semantics (fully bidirectional over prompt +
+            # response) regardless of whether ``past_key_values`` triggered
+            # the legacy causal-bias synthesis above. Verified empirically:
+            # honouring that auto-causal on the cached ``original`` decode
+            # collapses 150-sample MMMU-dev outputs to almost-entirely empty
+            # / ``<end`` strings, whereas suppressing it restores the
+            # bidirectional cached behaviour LaViDa's paper numbers were
+            # reported under.
+            attention_bias = None
 
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
 

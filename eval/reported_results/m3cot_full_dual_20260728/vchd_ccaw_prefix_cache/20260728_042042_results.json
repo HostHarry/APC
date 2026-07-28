@@ -1,0 +1,139 @@
+{
+  "results": {
+    "m3cot_full": {
+      "alias": "m3cot_full",
+      "m3cot_accuracy,none": 0.2558239861949957,
+      "m3cot_accuracy_stderr,none": 0.00906453328137229
+    }
+  },
+  "group_subtasks": {
+    "m3cot_full": []
+  },
+  "configs": {
+    "m3cot_full": {
+      "task": "m3cot_full",
+      "dataset_path": "csv",
+      "dataset_kwargs": {
+        "data_files": {
+          "test": "/root/autodl-tmp/MMaDA_DCD_cloud_bundle_20260711/MMaDA/evaluation/VLMEvalKit/LMUData/M3CoT.tsv"
+        },
+        "delimiter": "\t"
+      },
+      "test_split": "test",
+      "full_docs": false,
+      "process_results_use_image": false,
+      "process_docs": "<function m3cot_process_docs at 0x7f66253b9300>",
+      "doc_to_visual": "<function m3cot_doc_to_visual at 0x7f66253b99e0>",
+      "doc_to_text": "<function m3cot_doc_to_text at 0x7f66253b9ee0>",
+      "doc_to_target": "answer",
+      "process_results": "<function m3cot_process_results at 0x7f66253ba480>",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "m3cot_accuracy",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "max_new_tokens": 512,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "num_beams": 1,
+        "do_sample": false,
+        "until": [
+          "\n\n"
+        ],
+        "decode_strategy": "vchd",
+        "prefix_lm": true,
+        "vchd__prefix_prompt_cache": true,
+        "vchd__ccaw_enabled": true,
+        "vchd__ccaw_mode": "inverse_window",
+        "vchd__enable_g_gate": false,
+        "vchd__mask_capacity": 16,
+        "vchd__ccaw_max_mask_capacity": 64,
+        "vchd__alpha": 0.25,
+        "vchd__beta": 0.1,
+        "vchd__tau_base": 0.1,
+        "vchd__tau_contrast": 0.9
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0
+      },
+      "lmms_eval_specific_kwargs": {
+        "default": {
+          "prompt_mode": "cot"
+        },
+        "prompt_mode": "cot"
+      }
+    }
+  },
+  "versions": {
+    "m3cot_full": 1.0
+  },
+  "n-shot": {
+    "m3cot_full": 0
+  },
+  "higher_is_better": {
+    "m3cot_full": {
+      "m3cot_accuracy": true
+    }
+  },
+  "n-samples": {
+    "m3cot_full": {
+      "original": 2318,
+      "effective": 2318
+    }
+  },
+  "config": {
+    "model": "llava_llada",
+    "model_args": "pretrained=/autodl-fs/data/lavida-ckpts/lavida-llada-reason,conv_template=llada,model_name=llava_llada",
+    "batch_size": "1",
+    "batch_sizes": [],
+    "device": null,
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "decode_strategy": "vchd",
+      "prefix_lm": true,
+      "max_new_tokens": 512,
+      "vchd__prefix_prompt_cache": true,
+      "vchd__ccaw_enabled": true,
+      "vchd__ccaw_mode": "inverse_window",
+      "vchd__enable_g_gate": false,
+      "vchd__mask_capacity": 16,
+      "vchd__ccaw_max_mask_capacity": 64,
+      "vchd__alpha": 0.25,
+      "vchd__beta": 0.1,
+      "vchd__tau_base": 0.1,
+      "vchd__tau_contrast": 0.9
+    },
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "aafd94e",
+  "date": "20260728_042042",
+  "task_hashes": {
+    "m3cot_full": "d56bfee2556b42be1c030ae49a54a630edf1550279597b3dc4a43a96f492a96c"
+  },
+  "model_source": "llava_llada",
+  "model_name": "/autodl-fs/data/lavida-ckpts/lavida-llada-reason",
+  "model_name_sanitized": "lavida-ckpts__lavida-llada-reason",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": false,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "start_time": 14833781.477285182,
+  "end_time": 14886798.28024333,
+  "total_evaluation_time_seconds": "53016.8029581476"
+}

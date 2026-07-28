@@ -1,0 +1,23 @@
+{
+  "dataset": "m3cot_full",
+  "split": "test",
+  "n_expected": 2318,
+  "ckpt": "/autodl-fs/data/lavida-ckpts/lavida-llada-reason",
+  "schedule_note": "max_new_tokens=512; VCHD mask_capacity=16; CCAW inverse_window ccaw_max=64; prefix_prompt_cache=true; alpha=0.25 beta=0.1 tau_base=0.1 tau_contrast=0.9; g_gate=false",
+  "modes": {
+    "vchd_prefix_cache": {
+      "m3cot_accuracy": 0.26056945642795515,
+      "m3cot_accuracy_stderr": 0.009119004490752905,
+      "n_samples": 2318,
+      "results_file": "vchd_prefix_cache/20260728_042042_results.json",
+      "samples_file": "vchd_prefix_cache/20260728_042042_samples_m3cot_full.jsonl"
+    },
+    "vchd_ccaw_prefix_cache": {
+      "m3cot_accuracy": 0.2558239861949957,
+      "m3cot_accuracy_stderr": 0.00906453328137229,
+      "n_samples": 2318,
+      "results_file": "vchd_ccaw_prefix_cache/20260728_042042_results.json",
+      "samples_file": "vchd_ccaw_prefix_cache/20260728_042042_samples_m3cot_full.jsonl"
+    }
+  }
+}

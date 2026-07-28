@@ -7,6 +7,6 @@ without pulling on the full DCD stack.
 The originals in mmada_decode.py remain as thin wrappers around these, so
 v3.2 code paths are unchanged.
 """
-from . import image_drop, log_prob, paired_forward, types
+from . import image_drop, log_prob, paired_forward, types, vcd_noise
 
-__all__ = ["image_drop", "log_prob", "paired_forward", "types"]
+__all__ = ["image_drop", "log_prob", "paired_forward", "types", "vcd_noise"]

@@ -11,7 +11,7 @@ from .contrast import ContrastStats
 
 THRESHOLD_COMMIT = "THRESHOLD"
 MAX_WINDOW_TOP1_FALLBACK = "MAX_WINDOW_TOP1_FALLBACK"
-CCD_EMPTY_INTERSECTION_FALLBACK = "CCD_EMPTY_INTERSECTION_FALLBACK"
+FOCUS_DWELL_EMPTY_FALLBACK = "FOCUS_DWELL_EMPTY_FALLBACK"
 
 
 @dataclass(frozen=True)
@@ -163,46 +163,69 @@ def select_fixed_window_positions(
     )
 
 
-def select_ccd_history_positions(
+def select_focus_dwell_positions(
     stats: ContrastStats,
     mask: torch.BoolTensor,
     config: VCHDDecodeConfig,
     *,
     eligible_mask: torch.BoolTensor,
     marginal_entropy: torch.Tensor,
+    max_commit_per_iteration: Optional[int] = None,
 ) -> Selection:
-    """Select from the cross-iteration CCD intersection by marginal entropy."""
+    """Select from the persistent-focus dwell window ranked by marginal entropy.
+
+    ``max_commit_per_iteration`` overrides ``config.max_commit_per_iteration``
+    when provided; used by the focus_longtail+CCAW combined path to feed a
+    pressure-adaptive commit budget into the focus dwell selector.
+    """
 
     if eligible_mask.shape != mask.shape or marginal_entropy.shape != mask.shape:
-        raise ValueError("CCD selector inputs must match the response mask shape")
+        raise ValueError(
+            "Focus dwell selector inputs must match the response mask shape"
+        )
     if eligible_mask.dtype != torch.bool:
         raise TypeError("eligible_mask must be boolean")
     if bool((eligible_mask & ~mask).any()):
-        raise ValueError("CCD eligibility cannot include committed positions")
+        raise ValueError(
+            "Focus dwell eligibility cannot include committed positions"
+        )
+
+    commit_budget = (
+        int(max_commit_per_iteration)
+        if max_commit_per_iteration is not None
+        else int(config.max_commit_per_iteration)
+    )
+    if commit_budget < 1:
+        raise ValueError(
+            "max_commit_per_iteration override must be at least 1, got "
+            f"{commit_budget}"
+        )
 
     if not bool(eligible_mask.any()):
         fallback = select_fixed_window_positions(
             stats,
             mask,
             config,
-            mask_capacity=config.ccd_top_v_positions,
+            mask_capacity=config.focus_capacity,
             max_commit_per_iteration=1,
         )
         return Selection(
             positions=fallback.positions,
-            reason=CCD_EMPTY_INTERSECTION_FALLBACK,
+            reason=FOCUS_DWELL_EMPTY_FALLBACK,
             qualified_count=0,
             window=fallback.window,
         )
 
     window = build_fixed_window(
         eligible_mask,
-        mask_capacity=config.ccd_top_v_positions,
+        mask_capacity=config.focus_capacity,
         max_physical_span=config.max_physical_span,
     )
     active = window.active_positions
     if not bool(torch.isfinite(marginal_entropy[active]).all()):
-        raise FloatingPointError("Eligible CCD marginal entropy is not finite")
+        raise FloatingPointError(
+            "Eligible focus dwell marginal entropy is not finite"
+        )
     base = stats.base_confidence[active]
     contrast = stats.contrast_confidence[active]
     qualified = (
@@ -218,9 +241,7 @@ def select_ccd_history_positions(
             coherence,
             stats.contrast_confidence[qualified_positions],
         )
-        selected = qualified_positions[order][
-            : int(config.max_commit_per_iteration)
-        ]
+        selected = qualified_positions[order][:commit_budget]
         return Selection(
             positions=selected,
             reason=THRESHOLD_COMMIT,

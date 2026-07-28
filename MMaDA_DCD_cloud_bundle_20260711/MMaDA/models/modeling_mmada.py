@@ -45,10 +45,12 @@ from .configuration_llada import (
 from .modeling_llada import LLaDAModelLM
 from .mmada_decode import (
     MMaDADecodeConfig,
+    dcd_decode_text_official,
     decode_config_from_dict,
     dispatch_dcd_decode_image,
     dispatch_dcd_decode_text,
     dispatch_cv_dcd_decode_text,
+    vcd_decode_text,
 )
 from decoding import (
     VCHDDecodeConfig,
@@ -555,7 +557,7 @@ class MMadaModelLM(LLaDAModelLM):
                 attention_mask=attention_mask,
             )
 
-        if decode_strategy == 'dcd':
+        if decode_strategy in ('dcd', 'official_dcd'):
             if decode_config is None:
                 decode_config = MMaDADecodeConfig(mask_id=mask_id, temperature=temperature, cfg_scale=cfg_scale, remasking=remasking, block_size=block_length)
             elif isinstance(decode_config, dict):
@@ -569,15 +571,27 @@ class MMadaModelLM(LLaDAModelLM):
                 ab = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
             else:
                 ab = None
-            result = dispatch_dcd_decode_text(
-                model=self,
-                tokens=x,
-                decode_start=idx.shape[1],
-                decode_end=idx.shape[1] + max_new_tokens,
-                config=decode_config,
-                attention_bias=ab,
-                prompt_index=prompt_index,
-            )
+            if decode_strategy == 'official_dcd':
+                if cfg_scale > 0.0:
+                    raise ValueError("Official DCD reproduction does not use MMU CFG")
+                result = dcd_decode_text_official(
+                    model=self,
+                    tokens=x,
+                    decode_start=idx.shape[1],
+                    decode_end=idx.shape[1] + max_new_tokens,
+                    config=decode_config,
+                    attention_bias=ab,
+                )
+            else:
+                result = dispatch_dcd_decode_text(
+                    model=self,
+                    tokens=x,
+                    decode_start=idx.shape[1],
+                    decode_end=idx.shape[1] + max_new_tokens,
+                    config=decode_config,
+                    attention_bias=ab,
+                    prompt_index=prompt_index,
+                )
             return result if not decode_config.debug else result[0]
 
         if decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd'):
@@ -605,6 +619,58 @@ class MMadaModelLM(LLaDAModelLM):
                 tokens_out, debug_info = result
                 return tokens_out, debug_info
             return result if not decode_config.debug else result[0]
+
+        if decode_strategy == 'vcd':
+            if idx is None:
+                raise ValueError("VCD decoding requires token input_ids")
+            if cfg_scale > 0.0:
+                raise ValueError("VCD decoding does not support MMU CFG")
+            if decode_config is None:
+                decode_config = MMaDADecodeConfig(
+                    mask_id=mask_id,
+                    temperature=temperature,
+                    remasking=remasking,
+                    block_size=block_length,
+                    causal_lambda=1.0,
+                    cv_alpha=0.1,
+                    cv_mode="cd_apc",
+                    image_drop_strategy="gaussian_noise",
+                    visual_token_start=2,
+                    visual_token_end=1026,
+                )
+            elif isinstance(decode_config, dict):
+                decode_config = decode_config_from_dict(decode_config)
+            decode_config.mask_id = mask_id
+            decode_config.image_drop_strategy = "gaussian_noise"
+            if decode_config.noise_image_tokens is None:
+                raise ValueError(
+                    "VCD requires decode_config.noise_image_tokens "
+                    "(populate via add_diffusion_noise → get_code)"
+                )
+            batch_size = idx.shape[0]
+            x = torch.full(
+                (batch_size, idx.shape[1] + max_new_tokens),
+                mask_id,
+                dtype=torch.long,
+            ).to(self.device)
+            x[:, : idx.shape[1]] = idx.clone()
+            if attention_mask is not None and 0.0 in attention_mask:
+                ab = (
+                    attention_mask[:, :, None] & attention_mask[:, None, :]
+                ).bool().unsqueeze(1)
+            else:
+                ab = None
+            return vcd_decode_text(
+                model=self,
+                tokens=x,
+                decode_start=idx.shape[1],
+                decode_end=idx.shape[1] + max_new_tokens,
+                steps=steps,
+                block_length=block_length,
+                config=decode_config,
+                attention_bias=ab,
+                temperature=temperature,
+            )
 
         if attention_mask is not None and 0.0 in attention_mask:
             attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)

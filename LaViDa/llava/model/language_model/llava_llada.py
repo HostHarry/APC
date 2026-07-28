@@ -282,6 +282,8 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
             infer_visual_mask_from_expanded_ids,
             visual_contrast_decode,
         )
+        from llava.decoding.vcd_decoder import visual_contrastive_decode_vcd
+        from llava.decoding.vcd_noise import noise_images
 
         modalities = kwargs.pop("modalities", None) if "modalities" in kwargs and modalities is None else modalities
         position_ids = kwargs.pop("position_ids", None)
@@ -291,17 +293,18 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
 
         decode_strategy, decode_config = extract_decode_options(kwargs)
         tokenizer = kwargs.pop("tokenizer", None)
+        prefix_lm = bool(kwargs.get("prefix_lm", False))
 
-        if decode_strategy in ("vchd", "vchd_fixed"):
+        if decode_strategy in ("vchd", "vchd_fixed", "vcd"):
             if images is None:
-                raise ValueError("VCHD decoding requires visual inputs")
-            if kwargs.get("prefix_lm", False):
-                raise ValueError("VCHD decoding does not support prefix_lm=True")
+                raise ValueError(f"{decode_strategy} decoding requires visual inputs")
             if float(kwargs.get("cfg_scale", 0.0) or 0.0) > 0.0:
-                raise ValueError("VCHD decoding does not support cfg_scale > 0")
+                raise ValueError(f"{decode_strategy} decoding does not support cfg_scale > 0")
             if inputs is not None and inputs.shape[0] != 1:
-                raise ValueError("VCHD decoding supports batch_size=1 only")
+                raise ValueError(f"{decode_strategy} decoding supports batch_size=1 only")
 
+            raw_position_ids = position_ids
+            raw_attention_mask = attention_mask
             (
                 _input_ids,
                 position_ids,
@@ -312,8 +315,8 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 expanded_ids,
             ) = self.prepare_inputs_labels_for_multimodal(
                 inputs,
-                position_ids,
-                attention_mask,
+                raw_position_ids,
+                raw_attention_mask,
                 None,
                 None,
                 images,
@@ -323,10 +326,10 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
             )
             prompt_len = int(inputs_embeds.shape[1])
             max_new_tokens = int(kwargs.pop("max_new_tokens", 128))
-            kwargs.pop("block_length", None)
-            kwargs.pop("step_per_block", None)
+            block_length = kwargs.pop("block_length", None)
+            step_per_block = kwargs.pop("step_per_block", None)
+            steps = kwargs.pop("steps", None)
             kwargs.pop("step_ratio", None)
-            kwargs.pop("steps", None)
             kwargs.pop("schedule", None)
             kwargs.pop("schedule_kwargs", None)
             kwargs.pop("remasking", None)
@@ -341,7 +344,7 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
             kwargs.pop("stopping_criteria", None)
             temperature = float(kwargs.pop("temperature", 0.0) or 0.0)
             if temperature != 0.0:
-                # VCHD commit path is greedy over contrast scores; keep API tolerant.
+                # Contrast path is greedy over CD-APC scores; keep API tolerant.
                 pass
 
             mask_id = int(kwargs.pop("mask_id", 126336))
@@ -360,12 +363,48 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 text_vocab_size=text_vocab_size,
                 forbidden_token_ids=(mask_id,),
             )
+            if config.prefix_prompt_cache and not prefix_lm:
+                raise ValueError(
+                    f"{decode_strategy} paired prompt cache requires prefix_lm=True"
+                )
 
             visual_mask = infer_visual_mask_from_expanded_ids(expanded_ids[0])
             if not bool(visual_mask.any()):
                 raise ValueError(
-                    "VCHD requires IMAGE_TOKEN_INDEX positions in the expanded prompt"
+                    f"{decode_strategy} requires IMAGE_TOKEN_INDEX positions "
+                    "in the expanded prompt"
                 )
+
+            prompt_embeds_negative = None
+            if decode_strategy == "vcd" or config.negative_branch == "noise_image":
+                config.negative_branch = "noise_image"
+                images_cd = noise_images(images, config.noise_step)
+                (
+                    _ids_cd,
+                    _pos_cd,
+                    _attn_cd,
+                    _past_cd,
+                    inputs_embeds_cd,
+                    _labels_cd,
+                    _expanded_ids_cd,
+                ) = self.prepare_inputs_labels_for_multimodal(
+                    inputs,
+                    raw_position_ids,
+                    raw_attention_mask,
+                    None,
+                    None,
+                    images_cd,
+                    modalities,
+                    image_sizes=image_sizes,
+                    return_inputs=True,
+                )
+                if inputs_embeds_cd.shape != inputs_embeds.shape:
+                    raise RuntimeError(
+                        "Noised-image prompt embeds shape mismatch: "
+                        f"{tuple(inputs_embeds_cd.shape)} vs "
+                        f"{tuple(inputs_embeds.shape)}"
+                    )
+                prompt_embeds_negative = inputs_embeds_cd
 
             tokens = torch.full(
                 (1, prompt_len + max_new_tokens),
@@ -385,7 +424,34 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 attention_mask=attention_mask,
                 force_math_sdpa=config.force_math_sdpa,
                 backend="llada",
+                prefix_lm=prefix_lm,
+                prefix_prompt_cache=config.prefix_prompt_cache,
+                prompt_embeds_negative=prompt_embeds_negative,
             )
+            if decode_strategy == "vcd" or config.negative_branch == "noise_image":
+                # Keep original L/T/B transfer schedule for fair comparison.
+                bl = int(block_length) if block_length is not None else max_new_tokens
+                spb = int(step_per_block) if step_per_block is not None else 0
+                total_steps = int(steps) if steps is not None else 0
+                if spb <= 0 and total_steps <= 0:
+                    # Default: total_steps == max_new_tokens (LLaDA-style).
+                    total_steps = max_new_tokens
+                output_tokens = visual_contrastive_decode_vcd(
+                    self.get_model(),
+                    tokens,
+                    decode_start=prompt_len,
+                    decode_end=prompt_len + max_new_tokens,
+                    config=config,
+                    adapter=adapter,
+                    block_length=bl,
+                    steps=total_steps if total_steps > 0 else None,
+                    step_per_block=spb if spb > 0 else None,
+                    temperature=temperature,
+                )
+                self._last_vchd_report = None
+                return output_tokens[:, prompt_len:]
+
+            # VCHD pops block/step schedule; length controlled by max_new_tokens.
             result = visual_contrast_decode(
                 self.get_model(),
                 tokens,

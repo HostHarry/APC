@@ -81,6 +81,23 @@ def build_dropped_image(x: torch.Tensor, config: "MMaDADecodeConfig") -> torch.T
         neutral = neutral.to(device=x.device, dtype=x.dtype)
         x_drop[:, s:e] = neutral.expand(x.shape[0], -1)
 
+    elif strategy == "gaussian_noise":
+        # Pure VCD (Leng et al. CVPR 2024): splice per-sample noised-image VQ codes.
+        noisy = getattr(config, "noise_image_tokens", None)
+        if noisy is None:
+            raise RuntimeError(
+                "image_drop_strategy='gaussian_noise' requires config.noise_image_tokens "
+                "to be populated by the wrapper from add_diffusion_noise(image) → get_code."
+            )
+        expected = e - s
+        if noisy.shape[-1] != expected:
+            raise ValueError(
+                f"noise_image_tokens has length {noisy.shape[-1]} but the "
+                f"visual span is {expected} tokens ([{s}, {e}))."
+            )
+        noisy = noisy.to(device=x.device, dtype=x.dtype)
+        x_drop[:, s:e] = noisy.expand(x.shape[0], -1)
+
     elif strategy == "text_only":
         fill_id = getattr(config, "text_only_fill_id", None)
         if fill_id is None:

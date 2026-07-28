@@ -23,6 +23,9 @@
 !/VLind-Bench/scripts/run_llavabench_thinking_infer.sh
 !/VLind-Bench/scripts/run_mmbench_thinking_chain.sh
 !/VLind-Bench/scripts/run_mmbench_4way_2cycle.sh
+!/VLind-Bench/scripts/run_mmada_vcd_m3cot.sh
+!/VLind-Bench/scripts/run_mmada_vcd_matrix.sh
+!/VLind-Bench/eval/mmada_m3cot_eval.py
 
 # Python and test caches.
 **/__pycache__/

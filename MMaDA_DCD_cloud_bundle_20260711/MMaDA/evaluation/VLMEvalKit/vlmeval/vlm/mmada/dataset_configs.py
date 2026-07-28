@@ -58,6 +58,14 @@ DATASET_CONFIGS = {
         "steps": 128,
         "block_length": 64,
     },
+    # M3CoT is NOT registered in upstream Gen-Verse/open-compass VLMEvalKit.
+    # Generation uses this schedule via generate_mmada(..., dataset='M3CoT');
+    # scoring uses LightChen233/M3CoT evaluate.py (see VLind-Bench/eval/mmada_m3cot_eval.py).
+    "M3CoT": {
+        "max_new_tokens": 512,
+        "steps": 256,
+        "block_length": 64,
+    },
 }
 
 

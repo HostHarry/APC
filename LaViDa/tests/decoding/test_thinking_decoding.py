@@ -158,6 +158,49 @@ def test_visual_guided_logits_runs_paired_access_branches():
     assert torch.equal(logits.argmax(dim=-1), torch.ones(1, 5, dtype=torch.long))
 
 
+def test_visual_guided_logits_no_causal_overlay_in_cache_path():
+    """VRG must NOT AND a causal mask onto branch_bias when using cache.
+
+    LaViDa's Prefix-DLM keeps answer tokens bidirectional even in the
+    cached path, so an earlier attempt to torch.minimum branch_bias with
+    a causal bias was wrong. This test guards against re-adding it.
+    """
+
+    model = _ToyLlada()
+    embeddings = torch.randn(1, 4, 3)
+    # Dummy cache with two prompt-length keys so past_len=2.
+    fake_cache = [(torch.zeros(2, 1, 2, 1), torch.zeros(2, 1, 2, 1))]
+
+    _ = visual_guided_logits(
+        model,
+        embeddings,
+        visual_mask=torch.tensor([False, True]),
+        scale=0.0,
+        past_key_values=fake_cache,
+        force_math_sdpa=False,
+    )
+    bias = model.last_attention_bias
+    seq_len = 2 + 4  # past_len + query_len
+    assert bias.shape == (2, 1, seq_len, seq_len)
+    finfo = torch.finfo(bias.dtype)
+    # Branch 0 (visual) must be fully zero -- no causal, no ablation.
+    assert torch.all(bias[0] == 0.0)
+    # Branch 1 (ablated) must ONLY block non-visual queries from the
+    # visual column (index 1 in the visual_mask). Every other position
+    # -- including q>k pairs that a causal overlay would block -- stays
+    # exactly zero.
+    ablated = bias[1, 0]
+    for q in range(seq_len):
+        for k in range(seq_len):
+            expected = 0.0
+            if k == 1 and q != 1:
+                expected = finfo.min
+            assert float(ablated[q, k]) == expected, (
+                f"branch-1 bias mismatch at ({q},{k}): "
+                f"got {float(ablated[q, k])}, expected {expected}"
+            )
+
+
 def test_llada_generate_integrates_cached_vrg_and_completes_response():
     model = _ToyLlada()
     output = generate(

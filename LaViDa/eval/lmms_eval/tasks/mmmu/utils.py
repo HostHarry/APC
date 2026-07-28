@@ -1,7 +1,6 @@
 import ast
 import json
 import os
-import random
 import re
 import time
 from collections import defaultdict
@@ -394,9 +393,9 @@ def parse_multi_choice_response(response, all_choices, index2ans):
     Return the predicted index e.g., A, B, C, D.
     https://github.com/MMMU-Benchmark/MMMU/blob/51ce7f3e829c16bb44bc5445782686b4c3508794/eval/eval_utils.py#L10
     """
-    # Reasoning models frequently emit ``\boxed{B}``. The upstream parser
-    # does not recognize that form and can fall through to a random option.
-    # The final boxed choice is the model's explicit final answer.
+    # Reasoning models frequently emit ``\boxed{B}``. Prefer the final boxed
+    # choice as the model's explicit answer. If nothing can be parsed, return
+    # "" (count as wrong) instead of upstream ``random.choice``.
     boxed_matches = re.findall(
         r"\\boxed\s*\{\s*(?:\\text\s*\{\s*)?\(?\s*([A-Za-z])\s*\)?"
         r"(?:\s*\})?\s*\}",
@@ -437,8 +436,8 @@ def parse_multi_choice_response(response, all_choices, index2ans):
                 candidates.append(index)
                 index_ans = False  # it's content ans.
 
-    if len(candidates) == 0:  # still not get answer, randomly choose one.
-        pred_index = random.choice(all_choices)
+    if len(candidates) == 0:  # unparseable → wrong, no random guess
+        pred_index = ""
     elif len(candidates) > 1:
         start_indexes = []
         if index_ans:

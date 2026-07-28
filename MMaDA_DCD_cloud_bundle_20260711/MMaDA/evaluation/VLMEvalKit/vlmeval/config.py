@@ -1475,6 +1475,20 @@ mmada = {
         vchd_ccaw_enabled=True,
         vchd_cache_type="none",
     ),
+    "MMaDA-MixCoT-VCD": partial(
+        MMaDA,
+        model_path=MMADA_MODEL_PATH,
+        tokenizer_path=MMADA_TOKENIZER_PATH,
+        vq_model_path=MMADA_VQ_MODEL_PATH,
+        vq_model_type="magvitv2",
+        resolution=512,
+        decode_strategy="vcd",
+        # Paper defaults: α=1.0, β=0.1, noise_step=500 (via env / dcd_config).
+        cv_causal_lambda=1.0,
+        cv_alpha=0.1,
+        cv_image_drop="gaussian_noise",
+        cv_mode="cd_apc",
+    ),
 }
 internvl_groups = [
     internvl, internvl2, internvl2_5, mini_internvl, internvl2_5_mpo, 

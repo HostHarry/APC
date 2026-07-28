@@ -13,6 +13,7 @@ import torch.nn.functional as F
 class MMaDADecodeConfig:
     window_type: str = "sliding"
     initial_window_length: int = 32
+    max_window_length: int = 1_000_000_000
     block_size: int = 32
     decode_algo: str = "threshold"
     decode_param: float = 0.9
@@ -23,16 +24,21 @@ class MMaDADecodeConfig:
     debug: bool = False
     cache_type: str = "none"
     refresh_count: int = 1
+    eos_token_ids: Optional[Tuple[int, ...]] = None
+    pad_id: Optional[int] = None
+    text_vocab_size: Optional[int] = None
     # CV-DCD (Causal-Visual Deferred Commitment)
     visual_token_start: int = 2
     visual_token_end: int = 1026
     causal_lambda: float = 0.5
     causal_clip: float = 4.0
     cv_stride: int = 1
-    image_drop_strategy: str = "mask"  # mask | shuffle | random_mask | mean_token | neutral
+    image_drop_strategy: str = "mask"  # mask | shuffle | random_mask | mean_token | neutral | gaussian_noise | text_only
     return_debug: bool = False
     cv_alpha: float = 0.1
     cv_mode: str = "cd_apc"  # cd_apc | cd_naive | defer_only | legacy_score | off
+    # Pure VCD (Leng et al.): diffusion noise timestep for gaussian_noise drop.
+    vcd_noise_step: int = 500
     # cv_conf_source / cv_gate_tau are consumed by cv_mode in
     # {'cd_apc', 'cd_naive'}. They decouple "which token CD picks"
     # from "what confidence the DCD threshold sees", which is the main fix for
@@ -67,6 +73,9 @@ class MMaDADecodeConfig:
     # in the model's global vocab space (i.e., already offset by vocab_offset when
     # applicable). Populated by the wrapper at load time.
     neutral_image_tokens: Optional[torch.Tensor] = field(default=None, repr=False)
+    # Per-sample VCD noised-image VQ codes (same layout as neutral_image_tokens).
+    # Populated by the wrapper immediately before each generate call.
+    noise_image_tokens: Optional[torch.Tensor] = field(default=None, repr=False)
     # v4 addition: image_drop_strategy='text_only' replaces the image span with
     # this token id (typically tokenizer.pad_token_id or eos_token_id). Populated
     # by the wrapper when the strategy is selected.
@@ -449,6 +458,212 @@ def _iter_block_slices(decode_start: int, decode_end: int, block_size: int):
         nxt = min(pos + block_size, decode_end)
         yield pos, nxt
         pos = nxt
+
+
+def _official_dcd_eos_ids(config: MMaDADecodeConfig) -> Tuple[int, ...]:
+    values = config.eos_token_ids
+    if values is None:
+        return ()
+    if isinstance(values, int):
+        return (int(values),)
+    return tuple(int(value) for value in values)
+
+
+def _official_dcd_prepare_logits(
+    logits: torch.Tensor,
+    config: MMaDADecodeConfig,
+) -> torch.Tensor:
+    """Apply the multimodal vocabulary guard before official DCD sampling."""
+
+    logits = logits.clone()
+    if config.text_vocab_size is not None:
+        text_vocab_size = int(config.text_vocab_size)
+        if not 0 < text_vocab_size <= logits.shape[-1]:
+            raise ValueError(
+                "text_vocab_size must be in (0, model_vocab_size], got "
+                f"{text_vocab_size} for {logits.shape[-1]}"
+            )
+        logits[..., text_vocab_size:] = -torch.inf
+    if 0 <= int(config.mask_id) < logits.shape[-1]:
+        logits[..., int(config.mask_id)] = -torch.inf
+    return logits
+
+
+@torch.no_grad()
+def dcd_decode_text_official(
+    model,
+    tokens: torch.Tensor,
+    decode_start: int,
+    decode_end: int,
+    config: MMaDADecodeConfig,
+    attention_bias: Optional[torch.Tensor] = None,
+):
+    """Faithful multimodal port of shuyingte/DCD's bidirectional decoder.
+
+    The window update, threshold selection, delayed dual-cache replacement,
+    refresh accounting, and EOS handling follow ``window_bidirectional_decode``
+    from official commit ``ea6a4b78``. The only multimodal-specific addition is
+    restricting response candidates to the tokenizer vocabulary.
+    """
+
+    if config.window_type != "sliding":
+        raise ValueError("Official DCD reproduction requires window_type='sliding'")
+    if config.decode_algo != "threshold":
+        raise ValueError("Official DCD reproduction requires decode_algo='threshold'")
+    if not 0 <= decode_start < decode_end <= tokens.shape[1]:
+        raise ValueError(
+            f"Invalid decode range [{decode_start}, {decode_end}) for "
+            f"sequence length {tokens.shape[1]}"
+        )
+
+    window_size = int(config.initial_window_length)
+    max_window_length = int(config.max_window_length)
+    if window_size < 1:
+        raise ValueError("initial_window_length must be at least 1")
+    if max_window_length < window_size:
+        raise ValueError("max_window_length must be >= initial_window_length")
+
+    cache_type = str(config.cache_type).lower()
+    if cache_type == "dual":
+        cache_delay = 0
+    elif cache_type.startswith("dual-delay"):
+        suffix = cache_type[len("dual-delay") :]
+        if not suffix.isdigit():
+            raise ValueError(f"Invalid official DCD cache_type: {config.cache_type!r}")
+        cache_delay = int(suffix)
+    elif cache_type == "none":
+        cache_delay = 0
+    else:
+        raise ValueError(
+            "Official MMaDA DCD supports cache_type='none', 'dual', or "
+            f"'dual-delayN', got {config.cache_type!r}"
+        )
+
+    x = tokens.clone()
+    batch_size = int(x.shape[0])
+    full_length = int(x.shape[1])
+    window_left = int(decode_start)
+    window_right = min(window_left + window_size, int(decode_end))
+    num_mask = [
+        int((x[i, window_left:window_right] == config.mask_id).sum().item())
+        for i in range(batch_size)
+    ]
+    eos_pos = [int(decode_end) for _ in range(batch_size)]
+    eos_ids = _official_dcd_eos_ids(config)
+    pad_id = int(config.pad_id) if config.pad_id is not None else (
+        eos_ids[0] if eos_ids else int(config.mask_id)
+    )
+
+    cache = None
+    average_decode_since_last = float("inf")
+    old_window_left = window_left
+    nfe = 0
+
+    while (x[:, decode_start:decode_end] == config.mask_id).any():
+        use_cache = cache_type != "none"
+        if not use_cache:
+            out = model(x, attention_bias=attention_bias)
+            window_logits = out.logits[:, window_left:window_right]
+        elif cache is None or average_decode_since_last >= int(config.refresh_count):
+            out = model(
+                x,
+                attention_bias=attention_bias,
+                use_cache=True,
+            )
+            cache = out.past_key_values
+            average_decode_since_last = 0.0
+            window_logits = out.logits[:, window_left:window_right]
+        else:
+            start = max(old_window_left - cache_delay, decode_start)
+            stop = min(window_right + cache_delay, decode_end)
+            replace_position = torch.zeros_like(x, dtype=torch.bool)
+            replace_position[:, start:stop] = True
+            out = model(
+                x[:, start:stop],
+                attention_bias=attention_bias,
+                past_key_values=cache,
+                use_cache=True,
+                replace_position=replace_position,
+            )
+            cache = out.past_key_values
+            window_logits = out.logits[
+                :, window_left - start : window_right - start
+            ]
+        nfe += 1
+
+        window_logits = _official_dcd_prepare_logits(window_logits, config)
+        probabilities = torch.softmax(window_logits, dim=-1)
+        confidence, generated = probabilities.max(dim=-1)
+        candidates = x[:, window_left:window_right] == config.mask_id
+        threshold = float(config.decode_param)
+
+        total_decode = 0
+        for batch_idx in range(batch_size):
+            candidate_positions = candidates[batch_idx].nonzero(as_tuple=True)[0]
+            if candidate_positions.numel() == 0:
+                continue
+            candidate_confidence = confidence[batch_idx, candidate_positions]
+            num_decode = int((candidate_confidence >= threshold).sum().item())
+            num_decode = max(1, num_decode)
+            relative = torch.topk(candidate_confidence, k=num_decode).indices
+            local_positions = candidate_positions[relative]
+            absolute_positions = local_positions + window_left
+            x[batch_idx, absolute_positions] = generated[
+                batch_idx, local_positions
+            ]
+            decoded_count = int(absolute_positions.numel())
+            total_decode += decoded_count
+            num_mask[batch_idx] -= decoded_count
+
+            if eos_ids:
+                decoded_tokens = x[batch_idx, absolute_positions]
+                eos_hits = torch.zeros_like(decoded_tokens, dtype=torch.bool)
+                for eos_id in eos_ids:
+                    eos_hits |= decoded_tokens == eos_id
+                if eos_hits.any():
+                    eos_first = int(absolute_positions[eos_hits].min().item())
+                    skipped = int(
+                        (
+                            x[batch_idx, eos_first + 1 : eos_pos[batch_idx]]
+                            == config.mask_id
+                        )
+                        .sum()
+                        .item()
+                    )
+                    total_decode += skipped
+                    num_mask[batch_idx] -= int(
+                        (
+                            x[batch_idx, eos_first + 1 : window_right]
+                            == config.mask_id
+                        )
+                        .sum()
+                        .item()
+                    )
+                    x[batch_idx, eos_first + 1 : eos_pos[batch_idx]] = pad_id
+                    eos_pos[batch_idx] = min(eos_first, eos_pos[batch_idx])
+
+        average_decode_since_last += total_decode / batch_size
+        old_window_left, old_window_right = window_left, window_right
+        while (
+            window_left < decode_end
+            and (x[:, window_left] != config.mask_id).all()
+        ):
+            window_left += 1
+        if window_left >= decode_end:
+            break
+
+        window_right = min(
+            old_window_right + window_size - max(num_mask),
+            window_left + max_window_length,
+            max(eos_pos),
+            decode_end,
+        )
+        delta = window_right - old_window_right
+        for batch_idx in range(batch_size):
+            if eos_pos[batch_idx] == decode_end:
+                num_mask[batch_idx] += delta
+
+    return (x, nfe) if config.debug else x
 
 
 @torch.no_grad()
@@ -961,3 +1176,93 @@ def dispatch_dcd_decode_image(
             model, tokens, decode_start, decode_end, config, vocab_offset, codebook_size, attention_bias
         )
     return dcd_decode_image(model, tokens, decode_start, decode_end, config, vocab_offset, codebook_size, attention_bias)
+
+
+def vcd_decode_text(
+    model,
+    tokens: torch.Tensor,
+    decode_start: int,
+    decode_end: int,
+    *,
+    steps: int,
+    block_length: int,
+    config: MMaDADecodeConfig,
+    attention_bias: Optional[torch.Tensor] = None,
+    temperature: Optional[float] = None,
+) -> torch.Tensor:
+    """Pure VCD on the original block/step confidence-transfer schedule.
+
+    Negative branch = ``build_dropped_image`` with ``image_drop_strategy=
+    'gaussian_noise'`` (per-sample noised VQ codes). Token selection uses
+    CD-APC: ``(1+α)·logits − α·logits_noise`` with APC mask from ``cv_alpha``.
+    Paper defaults: causal_lambda (α) = 1.0, cv_alpha (β) = 0.1.
+    """
+    from .cv_common.image_drop import build_dropped_image
+
+    if config.image_drop_strategy != "gaussian_noise":
+        raise ValueError(
+            "vcd_decode_text requires image_drop_strategy='gaussian_noise', "
+            f"got {config.image_drop_strategy!r}"
+        )
+    if config.noise_image_tokens is None:
+        raise RuntimeError(
+            "vcd_decode_text requires config.noise_image_tokens to be set"
+        )
+
+    x = tokens.clone()
+    response_length = decode_end - decode_start
+    if response_length % block_length != 0:
+        raise ValueError(
+            f"response_length ({response_length}) must be divisible by "
+            f"block_length ({block_length})"
+        )
+    num_blocks = response_length // block_length
+    if steps % num_blocks != 0:
+        raise ValueError(
+            f"steps ({steps}) must be divisible by num_blocks ({num_blocks})"
+        )
+    steps_per_block = steps // num_blocks
+    temp = float(config.temperature if temperature is None else temperature)
+
+    for num_block in range(num_blocks):
+        block_left = decode_start + num_block * block_length
+        block_right = decode_start + (num_block + 1) * block_length
+        block_mask_index = x[:, block_left:block_right] == config.mask_id
+        num_transfer_tokens = get_num_transfer_tokens(
+            block_mask_index, steps_per_block
+        )
+        for step_i in range(steps_per_block):
+            mask_index = x == config.mask_id
+            if not bool(mask_index.any()):
+                return x
+            x_drop = build_dropped_image(x, config)
+            logits, drop_logits, _, _ = _paired_forward_logits(
+                model, x, x_drop, attention_bias
+            )
+            cd_logits = _apply_cd_style(logits, drop_logits, config)
+            logits_with_noise = add_gumbel_noise(cd_logits, temperature=temp)
+            x0 = torch.argmax(logits_with_noise, dim=-1)
+            if config.remasking == "low_confidence":
+                p = F.softmax(cd_logits.to(torch.float64), dim=-1)
+                x0_p = torch.squeeze(
+                    torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1
+                )
+            elif config.remasking == "random":
+                x0_p = torch.rand(
+                    (x0.shape[0], x0.shape[1]), device=x0.device
+                )
+            else:
+                raise NotImplementedError(config.remasking)
+
+            x0_p[:, block_right:] = -np.inf
+            x0 = torch.where(mask_index, x0, x)
+            confidence = torch.where(mask_index, x0_p, -np.inf)
+            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+            for j in range(confidence.shape[0]):
+                k = int(num_transfer_tokens[j, step_i].item())
+                if k <= 0:
+                    continue
+                _, select_index = torch.topk(confidence[j], k=k)
+                transfer_index[j, select_index] = True
+            x[transfer_index] = x0[transfer_index]
+    return x

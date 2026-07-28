@@ -152,25 +152,13 @@ def visual_guided_logits(
     if not bool(full_visual_mask.any()):
         raise ValueError("VRG requires at least one visual prompt position")
 
+    # LaViDa's Prefix-DLM design (paper §3.3) keeps answer tokens
+    # bidirectional over the full context, including in the cached
+    # prefix_lm path. The paired branch_bias only encodes the visual
+    # access ablation (visual columns are -inf for the ablated branch)
+    # -- no causal mask is imposed on top.
     branch_bias = build_paired_attention_bias_from_mask(full_visual_mask)
     if past_key_values is not None:
-        # Match LaViDa's cached prefix path, which becomes causal over the
-        # response tokens once past keys are supplied.
-        causal = torch.zeros_like(branch_bias)
-        upper_triangle = torch.triu(
-            torch.ones(
-                seq_len,
-                seq_len,
-                dtype=torch.bool,
-                device=input_embeddings.device,
-            ),
-            diagonal=1,
-        )
-        causal.masked_fill_(
-            upper_triangle[None, None],
-            torch.finfo(causal.dtype).min,
-        )
-        branch_bias = torch.minimum(branch_bias, causal)
         normalized_mask = None
     else:
         normalized_mask = _normalize_attention_mask(

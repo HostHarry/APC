@@ -16,8 +16,12 @@ from .lavida_adapter import (
     TokenVisualAccessAdapter,
     build_paired_attention_bias,
     build_paired_attention_bias_from_mask,
+    build_paired_prefix_attention_bias,
+    build_paired_shared_attention_bias_from_mask,
     infer_visual_mask_from_expanded_ids,
 )
+from .vcd_decoder import visual_contrastive_decode_vcd
+from .vcd_noise import add_diffusion_noise, noise_images
 from .thinking import (
     SwdState,
     ThinkingDecodeConfig,
@@ -56,8 +60,11 @@ __all__ = [
     "TokenVisualAccessAdapter",
     "VCHDDecodeConfig",
     "WindowPressure",
+    "add_diffusion_noise",
     "build_paired_attention_bias",
     "build_paired_attention_bias_from_mask",
+    "build_paired_prefix_attention_bias",
+    "build_paired_shared_attention_bias_from_mask",
     "build_valid_text_vocab",
     "apply_psp",
     "apply_swd",
@@ -67,6 +74,7 @@ __all__ = [
     "history_adjusted_reliability",
     "infer_visual_mask_from_expanded_ids",
     "kl_prev_vs_curr",
+    "noise_images",
     "observe_sparse_history",
     "pressure_adaptive_commit_budget",
     "resolve_thinking_config",
@@ -79,6 +87,7 @@ __all__ = [
     "update_ccaw_state",
     "update_inverse_ccaw_state",
     "vchd_config_from_dict",
+    "visual_contrastive_decode_vcd",
     "visual_guided_logits",
     "visual_guided_prefill",
     "visual_contrast_decode",

@@ -29,6 +29,18 @@ def test_mmmu_prefers_final_boxed_answer() -> None:
     )
 
 
+def test_mmmu_unparseable_is_empty_not_random() -> None:
+    # No letter / option content → must not invent a random choice.
+    assert (
+        parse_multi_choice_response(
+            "I am not sure about this question.",
+            ["A", "B", "C", "D"],
+            {"A": "alpha", "B": "beta", "C": "gamma", "D": "delta"},
+        )
+        == ""
+    )
+
+
 def test_mmbench_extracts_boxed_answer_without_api() -> None:
     evaluator = MMBench_Evaluator()
     response = r"After comparing A and C, the final answer is \boxed{B}."

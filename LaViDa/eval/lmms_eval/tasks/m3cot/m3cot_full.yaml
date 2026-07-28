@@ -1,7 +1,7 @@
 task: "m3cot_full"
 # Local HF snapshot: `LightChen2333/M3CoT` fails under HF_HUB_OFFLINE=1 even
 # when the hub cache exists (no auto fallback like lmms-lab datasets).
-dataset_path: LightChen2333/M3CoT
+dataset_path: /autodl-fs/data/hf_home/hub/datasets--LightChen2333--M3CoT/snapshots/48cf35001d595a6b0290c82c897a4b4563390821
 test_split: test
 output_type: generate_until
 doc_to_visual: !function utils.m3cot_doc_to_visual

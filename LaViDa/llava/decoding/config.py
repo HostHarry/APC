@@ -43,7 +43,7 @@ class VCHDDecodeConfig:
     text_vocab_size: Optional[int] = None
     forbidden_token_ids: Tuple[int, ...] = ()
 
-    alpha: float = 0.5
+    alpha: float = 0.25
     beta: float = 0.1
     jsd_epsilon: float = 1.0e-8
 
@@ -65,6 +65,7 @@ class VCHDDecodeConfig:
     cache_refresh_interval: int = 8
     cache_refresh_on_pressure: bool = True
     cache_pressure_threshold: float = 0.60
+    prefix_prompt_cache: bool = False
     truncate_at_eos: bool = True
     collect_trace: bool = False
     return_report: bool = False
@@ -85,6 +86,17 @@ class VCHDDecodeConfig:
     ccaw_pressure_scale: float = 1.0
     ccaw_expand_step: int = 8
     ccaw_shrink_step: int = 4
+
+    # Pure VCD (Leng et al. CVPR 2024): negative branch = Gaussian-noised image.
+    # When negative_branch == "noise_image", attention ablation is disabled and
+    # the adapter must be given a second prompt-embed sequence from the noised
+    # vision tower forward. noise_step follows the official VCD default (500).
+    negative_branch: str = "attention"
+    noise_step: int = 500
+    # Original-style block/step schedule for VCD (0 disables → VCHD window loop).
+    vcd_block_length: int = 0
+    vcd_steps: int = 0
+    vcd_step_per_block: int = 0
 
     def validate(self) -> None:
         if self.mask_id < 0:
@@ -191,6 +203,19 @@ class VCHDDecodeConfig:
                 "cache_pressure_threshold must be in [0, 1], got "
                 f"{self.cache_pressure_threshold}"
             )
+        if self.negative_branch not in {"attention", "noise_image"}:
+            raise ValueError(
+                "negative_branch must be 'attention' or 'noise_image', got "
+                f"{self.negative_branch!r}"
+            )
+        if self.noise_step < 0:
+            raise ValueError(
+                f"noise_step must be non-negative, got {self.noise_step}"
+            )
+        for name in ("vcd_block_length", "vcd_steps", "vcd_step_per_block"):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative, got {value}")
 
 
 def vchd_config_from_dict(values: Mapping[str, Any]) -> VCHDDecodeConfig:

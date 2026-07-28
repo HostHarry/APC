@@ -1297,22 +1297,36 @@ class LLaDAModel(nn.Module):
             attention_mask = None
 
         # Merge attention mask with attention bias.
+        #
+        # LaViDa / LLaDA is a *masked diffusion LM* whose Prefix-DLM
+        # semantics are bidirectional over answer tokens (LaViDa paper
+        # §3.3, "Prefix-DLM"). Attention geometry is set by callers in
+        # exactly one of the following ways:
+        #   - `attention_bias`: explicit additive mask (e.g. VCHD /
+        #     visual-ablated paired branches).
+        #   - `attention_mask`: HuggingFace-style 0/1 padding mask.
+        #   - `prefix_length` / `block_mask`: Prefix-DLM prompt-causal /
+        #     response-bidirectional pattern -- consumed via Flex a few
+        #     lines below.
+        #   - none of the above: full bidirectional attention.
+        #
+        # When `past_key_values` is provided but no explicit bias/mask is
+        # supplied, we must NOT synthesize a causal bias. The upstream
+        # OLMo comment about needing to seed the bias for SDPA+KV-cache
+        # applies to an autoregressive LM; for MDM we want SDPA to fall
+        # back to its unmasked bidirectional computation. Auto-generating
+        # a causal bias here silently regresses the cached prefix_lm
+        # path to causal-over-response and clobbers Flex block masks.
         if (
             attention_bias is not None
             or attention_mask is not None
             or self.config.alibi
-            # NOTE (epwalsh): we need to initialize the attn bias in order for attn to work properly
-            # with key+value cache. Otherwise `F.scaled_dot_product_attention()` doesn't seem to compute
-            # scores correctly.
-            or past_key_values is not None
         ):
             if attention_bias is None and self.config.alibi:
                 attention_bias = get_causal_attention_bias(
                     self.__cache, past_length + seq_len, x.device
                 ) + self.get_alibi_attention_bias(past_length + seq_len, x.device)
-            elif attention_bias is None:
-                attention_bias = get_causal_attention_bias(self.__cache, past_length + seq_len, x.device)
-            elif attention_bias.dtype in (torch.int8, torch.bool):
+            elif attention_bias is not None and attention_bias.dtype in (torch.int8, torch.bool):
                 attention_bias = attention_bias.to(dtype=torch.float)
                 attention_bias.masked_fill_(attention_bias == 0.0, torch.finfo(attention_bias.dtype).min)
 
@@ -1322,11 +1336,17 @@ class LLaDAModel(nn.Module):
                 mask_len = attention_mask.shape[-1]
             elif past_key_values is not None:
                 mask_len = past_key_values[0][0].shape[-2] + seq_len
-            attention_bias = attention_bias[:, :, :mask_len, :mask_len].to(dtype=torch.float)
+            if attention_bias is not None:
+                attention_bias = attention_bias[:, :, :mask_len, :mask_len].to(dtype=torch.float)
 
             # Add in the masking bias.
             if attention_mask is not None:
-                attention_bias = attention_bias + attention_mask
+                if attention_bias is None:
+                    attention_bias = attention_mask.to(dtype=torch.float).expand(
+                        -1, -1, mask_len, -1
+                    ).contiguous()
+                else:
+                    attention_bias = attention_bias + attention_mask
                 # Might get -infs after adding attention mask, since dtype.min + dtype.min = -inf.
                 # `F.scaled_dot_product_attention()` doesn't handle -inf like you'd expect, instead
                 # it can produce NaNs.

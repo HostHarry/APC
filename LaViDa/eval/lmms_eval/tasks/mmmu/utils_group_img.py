@@ -1,7 +1,6 @@
 import ast
 import json
 import os
-import random
 import re
 from collections import defaultdict
 
@@ -410,8 +409,8 @@ def parse_multi_choice_response(response, all_choices, index2ans):
                 candidates.append(index)
                 index_ans = False  # it's content ans.
 
-    if len(candidates) == 0:  # still not get answer, randomly choose one.
-        pred_index = random.choice(all_choices)
+    if len(candidates) == 0:  # unparseable → wrong, no random guess
+        pred_index = ""
     elif len(candidates) > 1:
         start_indexes = []
         if index_ans:

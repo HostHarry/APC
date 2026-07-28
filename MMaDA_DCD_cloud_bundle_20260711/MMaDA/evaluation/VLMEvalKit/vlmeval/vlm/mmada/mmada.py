@@ -65,11 +65,13 @@ class MMaDA(BaseModel):
                  cache_type='none',
                  dcd_window_type='sliding',
                  dcd_initial_window_length=32,
+                 dcd_max_window_length=128,
                  dcd_block_size=32,
                  dcd_decode_algo='threshold',
                  dcd_decode_param=0.9,
                  dcd_temperature=0.0,
                  dcd_remasking='low_confidence',
+                 dcd_refresh_count=32,
                  cv_causal_lambda=0.5,
                  cv_causal_clip=4.0,
                  cv_stride=1,
@@ -96,17 +98,18 @@ class MMaDA(BaseModel):
                  vchd_history_ema_decay=0.7,
                  vchd_history_penalty_scale=1.0,
                  vchd_history_anchor_min_consistent=0,
-                 vchd_ccd_history_enabled=False,
-                 vchd_ccd_history_length=2,
-                 vchd_ccd_top_v_positions=64,
-                 vchd_adaptive_temporal_enabled=False,
-                 vchd_adaptive_temporal_loglogistic_scale=3.20,
-                 vchd_adaptive_temporal_loglogistic_shape=8.0,
-                 vchd_adaptive_temporal_loglogistic_offset=1.0,
-                 vchd_adaptive_temporal_tail_mix_max=1.0,
-                 vchd_adaptive_temporal_exposure_scale=0.10,
-                 vchd_adaptive_temporal_relevance_scale=0.01,
-                 vchd_adaptive_temporal_conflict_scale=0.002,
+                 vchd_focus_dwell_enabled=False,
+                 vchd_focus_dwell_depth=2,
+                 vchd_focus_capacity=64,
+                 vchd_focus_longtail_enabled=False,
+                 vchd_focus_longtail_kernel_scale=3.20,
+                 vchd_focus_longtail_kernel_shape=8.0,
+                 vchd_focus_longtail_kernel_offset=1.0,
+                 vchd_focus_longtail_mix_ceiling=1.0,
+                 vchd_focus_longtail_exposure_tau=0.10,
+                 vchd_focus_longtail_relevance_tau=0.01,
+                 vchd_focus_longtail_conflict_tau=0.002,
+                 vchd_focus_longtail_history_epsilon=1.0e-4,
                  vchd_unified_trajectory_enabled=False,
                  vchd_unified_trajectory_top_k=4,
                  vchd_unified_trajectory_window_size=64,
@@ -162,7 +165,7 @@ class MMaDA(BaseModel):
         self.max_new_tokens = max_new_tokens
         self.steps = steps
         self.block_length = block_length
-        self.temperature = temperature
+        self.temperature = float(os.getenv('MMADA_TEMPERATURE', temperature))
         self.top_k = top_k
         self.use_config_file = use_config_file
         self.custom_configs = custom_configs or {}
@@ -247,72 +250,78 @@ class MMaDA(BaseModel):
                 vchd_history_anchor_min_consistent,
             )
         )
-        self.vchd_ccd_history_enabled = (
+        self.vchd_focus_dwell_enabled = (
             os.getenv(
-                'MMADA_VCHD_CCD_HISTORY',
-                '1' if vchd_ccd_history_enabled else '0',
+                'MMADA_VCHD_FOCUS_DWELL',
+                '1' if vchd_focus_dwell_enabled else '0',
             )
             == '1'
         )
-        self.vchd_ccd_history_length = int(
+        self.vchd_focus_dwell_depth = int(
             os.getenv(
-                'MMADA_VCHD_CCD_HISTORY_LENGTH',
-                vchd_ccd_history_length,
+                'MMADA_VCHD_FOCUS_DWELL_DEPTH',
+                vchd_focus_dwell_depth,
             )
         )
-        self.vchd_ccd_top_v_positions = int(
+        self.vchd_focus_capacity = int(
             os.getenv(
-                'MMADA_VCHD_CCD_TOP_V_POSITIONS',
-                vchd_ccd_top_v_positions,
+                'MMADA_VCHD_FOCUS_CAPACITY',
+                vchd_focus_capacity,
             )
         )
-        self.vchd_adaptive_temporal_enabled = (
+        self.vchd_focus_longtail_enabled = (
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL',
-                '1' if vchd_adaptive_temporal_enabled else '0',
+                'MMADA_VCHD_FOCUS_LONGTAIL',
+                '1' if vchd_focus_longtail_enabled else '0',
             )
             == '1'
         )
-        self.vchd_adaptive_temporal_loglogistic_scale = float(
+        self.vchd_focus_longtail_kernel_scale = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SCALE',
-                vchd_adaptive_temporal_loglogistic_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_SCALE',
+                vchd_focus_longtail_kernel_scale,
             )
         )
-        self.vchd_adaptive_temporal_loglogistic_shape = float(
+        self.vchd_focus_longtail_kernel_shape = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_SHAPE',
-                vchd_adaptive_temporal_loglogistic_shape,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_SHAPE',
+                vchd_focus_longtail_kernel_shape,
             )
         )
-        self.vchd_adaptive_temporal_loglogistic_offset = float(
+        self.vchd_focus_longtail_kernel_offset = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_LOGLOGISTIC_OFFSET',
-                vchd_adaptive_temporal_loglogistic_offset,
+                'MMADA_VCHD_FOCUS_LONGTAIL_KERNEL_OFFSET',
+                vchd_focus_longtail_kernel_offset,
             )
         )
-        self.vchd_adaptive_temporal_tail_mix_max = float(
+        self.vchd_focus_longtail_mix_ceiling = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_TAIL_MIX_MAX',
-                vchd_adaptive_temporal_tail_mix_max,
+                'MMADA_VCHD_FOCUS_LONGTAIL_MIX_CEILING',
+                vchd_focus_longtail_mix_ceiling,
             )
         )
-        self.vchd_adaptive_temporal_exposure_scale = float(
+        self.vchd_focus_longtail_exposure_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_EXPOSURE_SCALE',
-                vchd_adaptive_temporal_exposure_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_EXPOSURE_TAU',
+                vchd_focus_longtail_exposure_tau,
             )
         )
-        self.vchd_adaptive_temporal_relevance_scale = float(
+        self.vchd_focus_longtail_relevance_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_RELEVANCE_SCALE',
-                vchd_adaptive_temporal_relevance_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_RELEVANCE_TAU',
+                vchd_focus_longtail_relevance_tau,
             )
         )
-        self.vchd_adaptive_temporal_conflict_scale = float(
+        self.vchd_focus_longtail_conflict_tau = float(
             os.getenv(
-                'MMADA_VCHD_ADAPTIVE_TEMPORAL_CONFLICT_SCALE',
-                vchd_adaptive_temporal_conflict_scale,
+                'MMADA_VCHD_FOCUS_LONGTAIL_CONFLICT_TAU',
+                vchd_focus_longtail_conflict_tau,
+            )
+        )
+        self.vchd_focus_longtail_history_epsilon = float(
+            os.getenv(
+                'MMADA_VCHD_FOCUS_LONGTAIL_HISTORY_EPSILON',
+                vchd_focus_longtail_history_epsilon,
             )
         )
         self.vchd_unified_trajectory_enabled = (
@@ -549,16 +558,31 @@ class MMaDA(BaseModel):
                 vchd_cache_pressure_threshold,
             )
         )
-        if self.decode_strategy == 'dcd':
+        if self.decode_strategy in ('dcd', 'official_dcd'):
+            is_official_dcd = self.decode_strategy == 'official_dcd'
             self.dcd_config = MMaDADecodeConfig(
                 window_type=dcd_window_type,
-                initial_window_length=dcd_initial_window_length,
+                initial_window_length=int(os.getenv(
+                    'MMADA_DCD_INITIAL_WINDOW_LENGTH',
+                    16 if is_official_dcd else dcd_initial_window_length,
+                )),
+                max_window_length=int(os.getenv(
+                    'MMADA_DCD_MAX_WINDOW_LENGTH',
+                    dcd_max_window_length,
+                )),
                 block_size=dcd_block_size,
                 decode_algo=dcd_decode_algo,
                 decode_param=dcd_decode_param,
                 temperature=dcd_temperature,
                 remasking=dcd_remasking,
-                cache_type=os.getenv('MMADA_CACHE_TYPE', cache_type),
+                cache_type=os.getenv(
+                    'MMADA_CACHE_TYPE',
+                    'dual-delay2' if is_official_dcd else cache_type,
+                ),
+                refresh_count=int(os.getenv(
+                    'MMADA_DCD_REFRESH_COUNT',
+                    dcd_refresh_count if is_official_dcd else 1,
+                )),
             )
         elif self.decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd'):
             self.dcd_config = MMaDADecodeConfig(
@@ -585,6 +609,25 @@ class MMaDA(BaseModel):
                 defer_gain_type=self.defer_gain_type,
                 visual_token_start=2,
                 visual_token_end=1026,
+            )
+        elif self.decode_strategy == 'vcd':
+            # Pure VCD (Leng et al. CVPR 2024): α=1.0, β=0.1, noise_step=500.
+            self.vcd_noise_step = int(os.getenv('MMADA_VCD_NOISE_STEP', 500))
+            self.dcd_config = MMaDADecodeConfig(
+                temperature=float(os.getenv('MMADA_VCD_TEMPERATURE', self.temperature)),
+                remasking=dcd_remasking,
+                cache_type='none',
+                causal_lambda=float(os.getenv('MMADA_VCD_ALPHA', 1.0)),
+                cv_alpha=float(os.getenv('MMADA_VCD_BETA', 0.1)),
+                cv_mode='cd_apc',
+                image_drop_strategy='gaussian_noise',
+                vcd_noise_step=self.vcd_noise_step,
+                visual_token_start=2,
+                visual_token_end=1026,
+            )
+            print(
+                f"[MMaDA] decode_strategy=vcd, alpha={self.dcd_config.causal_lambda}, "
+                f"beta={self.dcd_config.cv_alpha}, noise_step={self.vcd_noise_step}"
             )
             # For image_drop_strategy='text_only', populate the filler token id
             # from the tokenizer's pad_token_id (fallback: eos_token_id).
@@ -671,6 +714,28 @@ class MMaDA(BaseModel):
                 )
         
         self.mask_token_id = self.model.config.mask_token_id if hasattr(self.model.config, 'mask_token_id') else None
+
+        if self.decode_strategy in ('dcd', 'official_dcd') and self.dcd_config is not None:
+            tokenizer_vocab = self.tokenizer.get_vocab()
+            eos_ids = {
+                int(token_id)
+                for token_id in (
+                    getattr(self.tokenizer, 'eos_token_id', None),
+                    tokenizer_vocab.get('<|eot|>'),
+                    tokenizer_vocab.get('<|eot_id|>'),
+                )
+                if token_id is not None
+            }
+            self.dcd_config.eos_token_ids = tuple(sorted(eos_ids)) or None
+            pad_id = getattr(self.tokenizer, 'pad_token_id', None)
+            self.dcd_config.pad_id = (
+                int(pad_id)
+                if pad_id is not None
+                else (min(eos_ids) if eos_ids else None)
+            )
+            self.dcd_config.text_vocab_size = len(
+                self.uni_prompting.text_tokenizer
+            )
 
         if self.decode_strategy in ('vchd', 'vchd_fixed'):
             mask_id = int(self.mask_token_id or 126336)
@@ -768,32 +833,35 @@ class MMaDA(BaseModel):
                 history_anchor_min_consistent=(
                     self.vchd_history_anchor_min_consistent
                 ),
-                ccd_history_enabled=self.vchd_ccd_history_enabled,
-                ccd_history_length=self.vchd_ccd_history_length,
-                ccd_top_v_positions=self.vchd_ccd_top_v_positions,
-                adaptive_temporal_enabled=(
-                    self.vchd_adaptive_temporal_enabled
+                focus_dwell_enabled=self.vchd_focus_dwell_enabled,
+                focus_dwell_depth=self.vchd_focus_dwell_depth,
+                focus_capacity=self.vchd_focus_capacity,
+                focus_longtail_enabled=(
+                    self.vchd_focus_longtail_enabled
                 ),
-                adaptive_temporal_loglogistic_scale=(
-                    self.vchd_adaptive_temporal_loglogistic_scale
+                focus_longtail_kernel_scale=(
+                    self.vchd_focus_longtail_kernel_scale
                 ),
-                adaptive_temporal_loglogistic_shape=(
-                    self.vchd_adaptive_temporal_loglogistic_shape
+                focus_longtail_kernel_shape=(
+                    self.vchd_focus_longtail_kernel_shape
                 ),
-                adaptive_temporal_loglogistic_offset=(
-                    self.vchd_adaptive_temporal_loglogistic_offset
+                focus_longtail_kernel_offset=(
+                    self.vchd_focus_longtail_kernel_offset
                 ),
-                adaptive_temporal_tail_mix_max=(
-                    self.vchd_adaptive_temporal_tail_mix_max
+                focus_longtail_mix_ceiling=(
+                    self.vchd_focus_longtail_mix_ceiling
                 ),
-                adaptive_temporal_exposure_scale=(
-                    self.vchd_adaptive_temporal_exposure_scale
+                focus_longtail_exposure_tau=(
+                    self.vchd_focus_longtail_exposure_tau
                 ),
-                adaptive_temporal_relevance_scale=(
-                    self.vchd_adaptive_temporal_relevance_scale
+                focus_longtail_relevance_tau=(
+                    self.vchd_focus_longtail_relevance_tau
                 ),
-                adaptive_temporal_conflict_scale=(
-                    self.vchd_adaptive_temporal_conflict_scale
+                focus_longtail_conflict_tau=(
+                    self.vchd_focus_longtail_conflict_tau
+                ),
+                focus_longtail_history_epsilon=(
+                    self.vchd_focus_longtail_history_epsilon
                 ),
                 unified_trajectory_enabled=(
                     self.vchd_unified_trajectory_enabled
@@ -894,16 +962,16 @@ class MMaDA(BaseModel):
                 f"history_scale={self.vchd_config.history_penalty_scale}, "
                 f"anchor_consistency="
                 f"{self.vchd_config.history_anchor_min_consistent}, "
-                f"ccd_history={self.vchd_config.ccd_history_enabled}, "
-                f"ccd_length={self.vchd_config.ccd_history_length}, "
-                f"ccd_top_v={self.vchd_config.ccd_top_v_positions}, "
-                f"adaptive_temporal="
-                f"{self.vchd_config.adaptive_temporal_enabled}, "
-                f"adaptive_kernel=loglogistic, "
-                f"adaptive_scale="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_scale}, "
-                f"adaptive_shape="
-                f"{self.vchd_config.adaptive_temporal_loglogistic_shape}, "
+                f"focus_dwell={self.vchd_config.focus_dwell_enabled}, "
+                f"focus_dwell_depth={self.vchd_config.focus_dwell_depth}, "
+                f"focus_capacity={self.vchd_config.focus_capacity}, "
+                f"focus_longtail="
+                f"{self.vchd_config.focus_longtail_enabled}, "
+                f"focus_longtail_kernel=loglogistic, "
+                f"focus_longtail_scale="
+                f"{self.vchd_config.focus_longtail_kernel_scale}, "
+                f"focus_longtail_shape="
+                f"{self.vchd_config.focus_longtail_kernel_shape}, "
                 f"unified_trajectory="
                 f"{self.vchd_config.unified_trajectory_enabled}, "
                 f"unified_top_k={self.vchd_config.unified_trajectory_top_k}, "
@@ -1060,8 +1128,11 @@ class MMaDA(BaseModel):
             'optics_dataset', 'quantum_dataset', 'statistics_dataset'
         ]:
             return False
-        if listinstr(['MMDU', 'MME-RealWorld', 'MME-RealWorld-CN', 'WeMath_COT', 'MMAlignBench'], dataset):
-            # For Multi-Turn we don't have custom prompt
+        if listinstr([
+            'MMDU', 'MME-RealWorld', 'MME-RealWorld-CN', 'WeMath_COT',
+            'MMAlignBench', 'M3CoT'
+        ], dataset):
+            # These datasets provide their own specialized prompt (incl. CoT).
             return False
         if DATASET_MODALITY(dataset) == 'VIDEO':
             # For Video benchmarks we don't have custom prompt at here
@@ -1157,6 +1228,24 @@ class MMaDA(BaseModel):
         
         image_tokens = self.vq_model.get_code(image) + len(self.uni_prompting.text_tokenizer)
 
+        if self.decode_strategy == 'vcd' and self.dcd_config is not None:
+            from models.cv_common.vcd_noise import add_diffusion_noise
+            noise_step = int(getattr(self, 'vcd_noise_step', self.dcd_config.vcd_noise_step))
+            image_noisy = add_diffusion_noise(image, noise_step)
+            noise_codes = (
+                self.vq_model.get_code(image_noisy)
+                + len(self.uni_prompting.text_tokenizer)
+            )
+            self.dcd_config.noise_image_tokens = noise_codes.squeeze(0).detach()
+            expected = int(
+                self.dcd_config.visual_token_end - self.dcd_config.visual_token_start
+            )
+            if int(self.dcd_config.noise_image_tokens.numel()) != expected:
+                raise RuntimeError(
+                    "VCD noise_image_tokens length mismatch: "
+                    f"{int(self.dcd_config.noise_image_tokens.numel())} vs {expected}"
+                )
+
         messages = [{"role": "user", "content": prompt}]
         text_token_ids = self.uni_prompting.text_tokenizer.apply_chat_template(
             messages,
@@ -1176,11 +1265,14 @@ class MMaDA(BaseModel):
         
         generation_kwargs = self.get_generation_kwargs(dataset)
 
-        if self.decode_strategy == 'dcd' and self.dcd_config is not None:
-            generation_kwargs['decode_strategy'] = 'dcd'
+        if self.decode_strategy in ('dcd', 'official_dcd') and self.dcd_config is not None:
+            generation_kwargs['decode_strategy'] = self.decode_strategy
             generation_kwargs['decode_config'] = self.dcd_config
         elif self.decode_strategy in ('cv_dcd', 'causal_dcd', 'grounded_dcd') and self.dcd_config is not None:
             generation_kwargs['decode_strategy'] = self.decode_strategy
+            generation_kwargs['decode_config'] = self.dcd_config
+        elif self.decode_strategy == 'vcd' and self.dcd_config is not None:
+            generation_kwargs['decode_strategy'] = 'vcd'
             generation_kwargs['decode_config'] = self.dcd_config
         elif self.decode_strategy in ('vchd', 'vchd_fixed') and self.vchd_config is not None:
             generation_kwargs['decode_strategy'] = self.decode_strategy
@@ -1374,38 +1466,41 @@ class MMaDA(BaseModel):
                         "history_anchor_min_consistent": (
                             self.vchd_config.history_anchor_min_consistent
                         ),
-                        "ccd_history_enabled": (
-                            self.vchd_config.ccd_history_enabled
+                        "focus_dwell_enabled": (
+                            self.vchd_config.focus_dwell_enabled
                         ),
-                        "ccd_history_length": (
-                            self.vchd_config.ccd_history_length
+                        "focus_dwell_depth": (
+                            self.vchd_config.focus_dwell_depth
                         ),
-                        "ccd_top_v_positions": (
-                            self.vchd_config.ccd_top_v_positions
+                        "focus_capacity": (
+                            self.vchd_config.focus_capacity
                         ),
-                        "adaptive_temporal_enabled": (
-                            self.vchd_config.adaptive_temporal_enabled
+                        "focus_longtail_enabled": (
+                            self.vchd_config.focus_longtail_enabled
                         ),
-                        "adaptive_temporal_loglogistic_scale": (
-                            self.vchd_config.adaptive_temporal_loglogistic_scale
+                        "focus_longtail_kernel_scale": (
+                            self.vchd_config.focus_longtail_kernel_scale
                         ),
-                        "adaptive_temporal_loglogistic_shape": (
-                            self.vchd_config.adaptive_temporal_loglogistic_shape
+                        "focus_longtail_kernel_shape": (
+                            self.vchd_config.focus_longtail_kernel_shape
                         ),
-                        "adaptive_temporal_loglogistic_offset": (
-                            self.vchd_config.adaptive_temporal_loglogistic_offset
+                        "focus_longtail_kernel_offset": (
+                            self.vchd_config.focus_longtail_kernel_offset
                         ),
-                        "adaptive_temporal_tail_mix_max": (
-                            self.vchd_config.adaptive_temporal_tail_mix_max
+                        "focus_longtail_mix_ceiling": (
+                            self.vchd_config.focus_longtail_mix_ceiling
                         ),
-                        "adaptive_temporal_exposure_scale": (
-                            self.vchd_config.adaptive_temporal_exposure_scale
+                        "focus_longtail_exposure_tau": (
+                            self.vchd_config.focus_longtail_exposure_tau
                         ),
-                        "adaptive_temporal_relevance_scale": (
-                            self.vchd_config.adaptive_temporal_relevance_scale
+                        "focus_longtail_relevance_tau": (
+                            self.vchd_config.focus_longtail_relevance_tau
                         ),
-                        "adaptive_temporal_conflict_scale": (
-                            self.vchd_config.adaptive_temporal_conflict_scale
+                        "focus_longtail_conflict_tau": (
+                            self.vchd_config.focus_longtail_conflict_tau
+                        ),
+                        "focus_longtail_history_epsilon": (
+                            self.vchd_config.focus_longtail_history_epsilon
                         ),
                         "unified_trajectory_enabled": (
                             self.vchd_config.unified_trajectory_enabled

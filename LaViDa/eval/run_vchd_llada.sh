@@ -2,7 +2,7 @@
 # Smoke / ablation runner for LaViDa-LLaDA + VCHD/CCAW.
 # Usage:
 #   bash eval/run_vchd_llada.sh /path/to/lavida-llada-hd
-#   MODE=original|vchd|vchd_ccaw TASKS=mmmu_val LIMIT=1 bash eval/run_vchd_llada.sh CKPT
+#   MODE=vchd_ccaw_prefix_cache TASKS=mmmu_val LIMIT=1 bash eval/run_vchd_llada.sh CKPT
 #
 # Schedule knobs (MMaDA-style L/T/block):
 #   MAX_NEW_TOKENS / BLOCK_LENGTH / STEP_PER_BLOCK
@@ -34,13 +34,37 @@ case "$MODE" in
     ;;
   vchd)
     # VCHD pops block/step schedule; length is controlled by max_new_tokens.
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    # alpha/beta: CD-APC contrast coeffs (paper default α=0.25, β=0.1).
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
     ;;
   vchd_ccaw)
-    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    ;;
+  vchd_prefix)
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    ;;
+  vchd_prefix_cache)
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=false,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    ;;
+  vchd_ccaw_prefix)
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=false,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    ;;
+  vchd_ccaw_prefix_cache)
+    GEN_KWARGS="decode_strategy=vchd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},vchd__prefix_prompt_cache=true,vchd__ccaw_enabled=true,vchd__ccaw_mode=inverse_window,vchd__enable_g_gate=false,vchd__mask_capacity=16,vchd__ccaw_max_mask_capacity=${CCAW_MAX_MASK},vchd__alpha=0.25,vchd__beta=0.1,vchd__tau_base=0.1,vchd__tau_contrast=0.9"
+    ;;
+  vcd)
+    # Pure VCD (Leng et al. CVPR 2024): noised-image negative branch + CD-APC.
+    # Paper defaults α=1.0, β=0.1, noise_step=500. Uses original L/T/B schedule.
+    GEN_KWARGS="decode_strategy=vcd,prefix_lm=False,max_new_tokens=${MAX_NEW_TOKENS},block_length=${BLOCK_LENGTH},step_per_block=${STEP_PER_BLOCK},vcd__noise_step=500,vcd__alpha=1.0,vcd__beta=0.1"
+    ;;
+  vcd_prefix)
+    GEN_KWARGS="decode_strategy=vcd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},block_length=${BLOCK_LENGTH},step_per_block=${STEP_PER_BLOCK},vcd__prefix_prompt_cache=false,vcd__noise_step=500,vcd__alpha=1.0,vcd__beta=0.1"
+    ;;
+  vcd_prefix_cache)
+    GEN_KWARGS="decode_strategy=vcd,prefix_lm=True,max_new_tokens=${MAX_NEW_TOKENS},block_length=${BLOCK_LENGTH},step_per_block=${STEP_PER_BLOCK},vcd__prefix_prompt_cache=true,vcd__noise_step=500,vcd__alpha=1.0,vcd__beta=0.1"
     ;;
   *)
-    echo "Unknown MODE=$MODE (expected original|vchd|vchd_ccaw)" >&2
+    echo "Unknown MODE=$MODE" >&2
     exit 1
     ;;
 esac

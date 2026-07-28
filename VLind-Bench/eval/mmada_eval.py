@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--strategy",
-        choices=("original", "dcd", "cv_dcd", "vchd", "vchd_fixed"),
+        choices=("original", "dcd", "cv_dcd", "vchd", "vchd_fixed", "vcd"),
         default="vchd",
     )
     parser.add_argument(
@@ -67,8 +67,9 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "plain",
             "history",
-            "ccd_history",
-            "adaptive_temporal",
+            "focus_dwell",
+            "focus_longtail",
+            "focus_longtail_ccaw",
             "ccaw",
             "history_ccaw",
             "counterfactual_current",
@@ -128,38 +129,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vchd-history-anchor-min-consistent", type=int, default=0
     )
-    parser.add_argument("--vchd-ccd-history-length", type=int, default=2)
-    parser.add_argument("--vchd-ccd-top-v-positions", type=int, default=64)
+    parser.add_argument("--vchd-focus-dwell-depth", type=int, default=2)
+    parser.add_argument("--vchd-focus-capacity", type=int, default=64)
     parser.add_argument(
-        "--vchd-adaptive-temporal-loglogistic-scale",
+        "--vchd-focus-longtail-kernel-scale",
         type=float,
         default=3.20,
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-loglogistic-shape",
+        "--vchd-focus-longtail-kernel-shape",
         type=float,
         default=8.0,
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-loglogistic-offset",
+        "--vchd-focus-longtail-kernel-offset",
         type=float,
         default=1.0,
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-tail-mix-max",
+        "--vchd-focus-longtail-mix-ceiling",
         type=float,
         default=1.0,
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-exposure-scale", type=float, default=0.10
+        "--vchd-focus-longtail-exposure-tau", type=float, default=0.10
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-relevance-scale", type=float, default=0.01
+        "--vchd-focus-longtail-relevance-tau", type=float, default=0.01
     )
     parser.add_argument(
-        "--vchd-adaptive-temporal-conflict-scale",
+        "--vchd-focus-longtail-conflict-tau",
         type=float,
         default=0.002,
+    )
+    parser.add_argument(
+        "--vchd-focus-longtail-history-epsilon",
+        type=float,
+        default=1.0e-4,
     )
     parser.add_argument("--vchd-ccaw-mode", default="legacy")
     parser.add_argument("--vchd-ccaw-block-size", type=int, default=32)
@@ -167,8 +173,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vchd-ccaw-qualified-budget", type=int, default=1)
     parser.add_argument("--vchd-ccaw-max-capacity", type=int, default=64)
     parser.add_argument("--vchd-ccaw-pressure-decay", type=float, default=0.8)
+    parser.add_argument("--vchd-ccaw-pressure-scale", type=float, default=1.0)
     parser.add_argument("--vchd-ccaw-expand-step", type=int, default=8)
     parser.add_argument("--vchd-ccaw-shrink-step", type=int, default=4)
+    parser.add_argument(
+        "--vchd-ccaw-pressure-filter",
+        choices=("none", "ema"),
+        default="none",
+    )
+    parser.add_argument(
+        "--vchd-fallback-mask-capacity", type=int, default=0
+    )
+    parser.add_argument(
+        "--vchd-fallback-policy",
+        choices=("readiness", "leftmost"),
+        default="readiness",
+    )
+    parser.add_argument(
+        "--thinking-psp",
+        action="store_true",
+        help="Enable Position & Step Penalty on original remasking",
+    )
+    parser.add_argument("--thinking-psp-gamma", type=float, default=0.5)
+    parser.add_argument(
+        "--thinking-vrg",
+        action="store_true",
+        help="Enable Visual Reasoning Guidance on original remasking",
+    )
+    parser.add_argument("--thinking-vrg-scale", type=float, default=0.5)
+    parser.add_argument(
+        "--thinking-swd",
+        action="store_true",
+        help="Enable Stability-Weighted Decoding on original remasking",
+    )
+    parser.add_argument("--thinking-swd-lambda", type=float, default=5.0)
 
     parser.add_argument(
         "--vchd-counterfactual-exposure-window-size",
@@ -337,9 +375,16 @@ def profile_settings(args: argparse.Namespace) -> dict[str, Any]:
     }
     return {
         "history_enabled": profile in {"history", "history_ccaw"},
-        "ccd_history_enabled": profile == "ccd_history",
-        "adaptive_temporal_enabled": profile == "adaptive_temporal",
-        "ccaw_enabled": profile in {"ccaw", "history_ccaw"},
+        "focus_dwell_enabled": profile == "focus_dwell",
+        "focus_longtail_enabled": profile in {
+            "focus_longtail",
+            "focus_longtail_ccaw",
+        },
+        "ccaw_enabled": profile in {
+            "ccaw",
+            "history_ccaw",
+            "focus_longtail_ccaw",
+        },
         "counterfactual_exposure_mode": counterfactual_mode,
         "unified_trajectory_enabled": profile in unified_profiles,
         "unified_trajectory_adaptive_visual_relevance": (
@@ -585,32 +630,35 @@ def instantiate_model(args: argparse.Namespace) -> Any:
         vchd_history_anchor_min_consistent=(
             args.vchd_history_anchor_min_consistent
         ),
-        vchd_ccd_history_enabled=settings["ccd_history_enabled"],
-        vchd_ccd_history_length=args.vchd_ccd_history_length,
-        vchd_ccd_top_v_positions=args.vchd_ccd_top_v_positions,
-        vchd_adaptive_temporal_enabled=(
-            settings["adaptive_temporal_enabled"]
+        vchd_focus_dwell_enabled=settings["focus_dwell_enabled"],
+        vchd_focus_dwell_depth=args.vchd_focus_dwell_depth,
+        vchd_focus_capacity=args.vchd_focus_capacity,
+        vchd_focus_longtail_enabled=(
+            settings["focus_longtail_enabled"]
         ),
-        vchd_adaptive_temporal_loglogistic_scale=(
-            args.vchd_adaptive_temporal_loglogistic_scale
+        vchd_focus_longtail_kernel_scale=(
+            args.vchd_focus_longtail_kernel_scale
         ),
-        vchd_adaptive_temporal_loglogistic_shape=(
-            args.vchd_adaptive_temporal_loglogistic_shape
+        vchd_focus_longtail_kernel_shape=(
+            args.vchd_focus_longtail_kernel_shape
         ),
-        vchd_adaptive_temporal_loglogistic_offset=(
-            args.vchd_adaptive_temporal_loglogistic_offset
+        vchd_focus_longtail_kernel_offset=(
+            args.vchd_focus_longtail_kernel_offset
         ),
-        vchd_adaptive_temporal_tail_mix_max=(
-            args.vchd_adaptive_temporal_tail_mix_max
+        vchd_focus_longtail_mix_ceiling=(
+            args.vchd_focus_longtail_mix_ceiling
         ),
-        vchd_adaptive_temporal_exposure_scale=(
-            args.vchd_adaptive_temporal_exposure_scale
+        vchd_focus_longtail_exposure_tau=(
+            args.vchd_focus_longtail_exposure_tau
         ),
-        vchd_adaptive_temporal_relevance_scale=(
-            args.vchd_adaptive_temporal_relevance_scale
+        vchd_focus_longtail_relevance_tau=(
+            args.vchd_focus_longtail_relevance_tau
         ),
-        vchd_adaptive_temporal_conflict_scale=(
-            args.vchd_adaptive_temporal_conflict_scale
+        vchd_focus_longtail_conflict_tau=(
+            args.vchd_focus_longtail_conflict_tau
+        ),
+        vchd_focus_longtail_history_epsilon=(
+            args.vchd_focus_longtail_history_epsilon
         ),
         vchd_unified_trajectory_enabled=(
             settings["unified_trajectory_enabled"]
@@ -661,8 +709,18 @@ def instantiate_model(args: argparse.Namespace) -> Any:
         vchd_ccaw_qualified_budget=args.vchd_ccaw_qualified_budget,
         vchd_ccaw_max_capacity=args.vchd_ccaw_max_capacity,
         vchd_ccaw_pressure_decay=args.vchd_ccaw_pressure_decay,
+        vchd_ccaw_pressure_scale=args.vchd_ccaw_pressure_scale,
         vchd_ccaw_expand_step=args.vchd_ccaw_expand_step,
         vchd_ccaw_shrink_step=args.vchd_ccaw_shrink_step,
+        vchd_ccaw_pressure_filter=args.vchd_ccaw_pressure_filter,
+        vchd_fallback_mask_capacity=args.vchd_fallback_mask_capacity,
+        vchd_fallback_policy=args.vchd_fallback_policy,
+        thinking_psp_enabled=args.thinking_psp,
+        thinking_psp_gamma=args.thinking_psp_gamma,
+        thinking_vrg_enabled=args.thinking_vrg,
+        thinking_vrg_scale=args.thinking_vrg_scale,
+        thinking_swd_enabled=args.thinking_swd,
+        thinking_swd_lambda=args.thinking_swd_lambda,
         vchd_counterfactual_exposure_mode=(
             settings["counterfactual_exposure_mode"]
         ),

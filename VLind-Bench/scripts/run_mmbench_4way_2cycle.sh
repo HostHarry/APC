@@ -1,55 +1,20 @@
 #!/usr/bin/env bash
-# MMBench two-cycle evaluation harness used by the thinking-method chain.
+# Four-way MMBench two-cycle evaluation on two GPUs.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${MMADA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-EXTERNAL_ROOT="${MMADA_EXTERNAL_ROOT:-/root/autodl-tmp}"
-VLMEVAL="$REPO_ROOT/MMaDA_DCD_cloud_bundle_20260711/MMaDA/evaluation/VLMEvalKit"
-DATASET="${MMADA_MMBENCH_DATASET:-MMBench_DEV_EN_2C}"
-RUN_ID="${MMADA_RUN_ID:-mmbench_4way_2cycle_$(date +%Y%m%d_%H%M%S)}"
-RUN_ROOT="${MMADA_OUTPUT_ROOT:-$VLMEVAL/outputs/$RUN_ID}"
-LOG_ROOT="${MMADA_LOG_ROOT:-$VLMEVAL/logs/$RUN_ID}"
+ROOT=/root/autodl-tmp
+VLMEVAL="$ROOT/MMaDA_DCD_cloud_bundle_20260711/MMaDA/evaluation/VLMEvalKit"
+DATASET=MMBench_DEV_EN_2C
+RUN_ID="${MMADA_RUN_ID:-mmbench_4way_2cycle_20260723}"
+RUN_ROOT="$VLMEVAL/outputs/$RUN_ID"
+LOG_ROOT="$VLMEVAL/logs/$RUN_ID"
 STATUS_LOG="$LOG_ROOT/status.log"
 PYTHON="${PYTHON:-python}"
-GPU_IDS="${MMADA_GPU_IDS:-0,1}"
-NPROC_PER_NODE="${MMADA_NPROC_PER_NODE:-2}"
-LMU_DATA_ROOT="${LMUData:-$VLMEVAL/LMUData}"
-TWO_CYCLE_SOURCE="${MMADA_MMBENCH_SOURCE_TSV:-$LMU_DATA_ROOT/MMBench_DEV_EN.tsv}"
-TWO_CYCLE_TSV="$LMU_DATA_ROOT/MMBench_DEV_EN_2C.tsv"
-TWO_CYCLE_GENERATOR="$SCRIPT_DIR/make_mmbench_two_cycle.py"
 
 mkdir -p "$RUN_ROOT" "$LOG_ROOT"
 
 status() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*" | tee -a "$STATUS_LOG"
-}
-
-prepare_two_cycle_dataset() {
-  if [[ "$DATASET" != "MMBench_DEV_EN_2C" ]]; then
-    return 0
-  fi
-  if [[ -s "$TWO_CYCLE_TSV" ]]; then
-    status "using existing two-cycle TSV: $TWO_CYCLE_TSV"
-    return 0
-  fi
-  if [[ ! -s "$TWO_CYCLE_SOURCE" ]]; then
-    status "ERROR missing source TSV: $TWO_CYCLE_SOURCE"
-    status "Prepare it, then run:"
-    status "  $PYTHON $TWO_CYCLE_GENERATOR $TWO_CYCLE_SOURCE $TWO_CYCLE_TSV"
-    return 2
-  fi
-
-  status "generating two-cycle TSV from $TWO_CYCLE_SOURCE"
-  if ! "$PYTHON" "$TWO_CYCLE_GENERATOR" \
-      "$TWO_CYCLE_SOURCE" "$TWO_CYCLE_TSV" | tee -a "$STATUS_LOG"; then
-    status "ERROR two-cycle TSV generation failed"
-    return 2
-  fi
-  if [[ ! -s "$TWO_CYCLE_TSV" ]]; then
-    status "ERROR generator did not create $TWO_CYCLE_TSV"
-    return 2
-  fi
 }
 
 clear_method_env() {
@@ -72,17 +37,17 @@ clear_method_env() {
 }
 
 common_env() {
-  export LMUData="$LMU_DATA_ROOT"
-  export MMADA_MODEL_PATH="${MMADA_MODEL_PATH:-$EXTERNAL_ROOT/MMaDA-8B-MixCoT}"
-  export MMADA_TOKENIZER_PATH="${MMADA_TOKENIZER_PATH:-$EXTERNAL_ROOT/MMaDA-8B-MixCoT}"
-  export MMADA_VQ_MODEL_PATH="${MMADA_VQ_MODEL_PATH:-$EXTERNAL_ROOT/magvitv2}"
+  export LMUData="$VLMEVAL/LMUData"
+  export MMADA_MODEL_PATH="$ROOT/MMaDA-8B-MixCoT"
+  export MMADA_TOKENIZER_PATH="$ROOT/MMaDA-8B-MixCoT"
+  export MMADA_VQ_MODEL_PATH="$ROOT/magvitv2"
   export MMADA_SKIP_LOCALIZE=1
-  export MMADA_TEMPERATURE="${MMADA_TEMPERATURE:-0.0}"
+  export MMADA_TEMPERATURE=0.0
   export PRINT_VANILLA=1
   export PYTHONUNBUFFERED=1
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
-  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+  export HF_HUB_OFFLINE=1
+  export TRANSFORMERS_OFFLINE=1
   unset USE_COT
   if [[ -n "${MMBENCH_INDICES:-}" ]]; then
     export MMADA_INDICES="$MMBENCH_INDICES"
@@ -142,6 +107,7 @@ configure_method() {
       export MMADA_VCHD_CACHE_TYPE=none
       ;;
     swd)
+      # Thinking SWD on original remasking (same hyperparams as VLind/LLaVABench)
       export MMADA_DECODE_STRATEGY=original
       export MMADA_CACHE_TYPE=none
       export MMADA_THINKING_SWD=1
@@ -179,13 +145,13 @@ run_method() {
   local log_file="$LOG_ROOT/$tag.log"
   mkdir -p "$out_dir"
   configure_method "$tag" || return $?
-  status "START $tag gpus=$GPU_IDS dataset=$DATASET indices=${MMBENCH_INDICES:-all}"
+  status "START $tag gpus=0,1 dataset=$DATASET indices=${MMBENCH_INDICES:-all}"
   status "  decode=${MMADA_DECODE_STRATEGY:-} thinking PSP=${MMADA_THINKING_PSP:-0} VRG=${MMADA_THINKING_VRG:-0} SWD=${MMADA_THINKING_SWD:-0}"
   (
     cd "$VLMEVAL"
-    CUDA_VISIBLE_DEVICES="$GPU_IDS" torchrun \
+    CUDA_VISIBLE_DEVICES=0,1 torchrun \
       --standalone \
-      --nproc-per-node="$NPROC_PER_NODE" \
+      --nproc-per-node=2 \
       run.py \
       --data "$DATASET" \
       --model MMaDA-MixCoT \
@@ -204,27 +170,29 @@ run_method() {
 }
 
 summarize() {
-  "$PYTHON" - "$RUN_ROOT" "$DATASET" <<'PY'
+  "$PYTHON" - "$RUN_ROOT" <<'PY'
 from pathlib import Path
 import sys
-
 import pandas as pd
 
 root = Path(sys.argv[1])
-dataset = sys.argv[2]
 rows = []
+# Prefer methods that exist under RUN_ROOT; keep a stable preferred order.
 preferred = [
     "original", "official_dcd", "vchd", "vchd_ccaw",
     "swd", "psp", "psp_vrg",
 ]
-tags = [tag for tag in preferred if (root / tag).exists()]
-for path in sorted(root.iterdir()):
-    if path.is_dir() and path.name not in tags:
-        tags.append(path.name)
+tags = []
+for tag in preferred:
+    if (root / tag).exists():
+        tags.append(tag)
+for p in sorted(root.iterdir()):
+    if p.is_dir() and p.name not in tags:
+        tags.append(p.name)
 for tag in tags:
-    files = list((root / tag).rglob(f"*_{dataset}_acc_all.csv"))
+    files = list((root / tag).rglob("*_MMBench_DEV_EN_2C_acc_all.csv"))
     if not files:
-        files = list((root / tag).rglob(f"*_{dataset}_acc.csv"))
+        files = list((root / tag).rglob("*_MMBench_DEV_EN_2C_acc.csv"))
     if not files:
         print(f"{tag}: score missing")
         continue
@@ -242,12 +210,8 @@ PY
 
 main() {
   status "RUN START id=$RUN_ID"
-  if ! prepare_two_cycle_dataset; then
-    status "RUN ABORT id=$RUN_ID: two-cycle dataset unavailable"
-    return 2
-  fi
   local failed=0
-  local methods="${MMADA_METHODS:-swd psp psp_vrg}"
+  local methods="${MMADA_METHODS:-official_dcd original vchd vchd_ccaw}"
   for tag in $methods; do
     if ! run_method "$tag"; then
       failed=1

@@ -50,7 +50,7 @@ def extract_decode_options(
 
     decode_strategy = str(kwargs.pop("decode_strategy", "original"))
     decode_config = kwargs.pop("decode_config", None)
-    vchd_strategies = {"vchd", "vchd_fixed"}
+    vchd_strategies = {"vchd", "vchd_fixed", "vcd"}
     thinking_strategies = {"thinking", "swd", "psp", "vrg", "psp_vrg"}
     allowed_strategies = {"original"} | vchd_strategies | thinking_strategies
     if decode_strategy not in allowed_strategies:
@@ -62,8 +62,9 @@ def extract_decode_options(
     vchd_flat: Dict[str, Any] = {}
     thinking_flat: Dict[str, Any] = {}
     for key in list(kwargs.keys()):
-        if key.startswith("vchd__"):
-            name = key[len("vchd__") :]
+        if key.startswith("vchd__") or key.startswith("vcd__"):
+            prefix = "vchd__" if key.startswith("vchd__") else "vcd__"
+            name = key[len(prefix) :]
             vchd_flat[name] = _coerce_flat_value(name, kwargs.pop(key))
         elif key.startswith("thinking__"):
             name = key[len("thinking__") :]
@@ -71,10 +72,11 @@ def extract_decode_options(
 
     if vchd_flat and decode_strategy not in vchd_strategies:
         raise ValueError(
-            "vchd__* options require decode_strategy='vchd' or 'vchd_fixed'"
+            "vchd__/vcd__* options require decode_strategy in "
+            f"{sorted(vchd_strategies)}"
         )
     if thinking_flat and decode_strategy in vchd_strategies:
-        raise ValueError("thinking__* options cannot be combined with VCHD")
+        raise ValueError("thinking__* options cannot be combined with VCHD/VCD")
 
     flat = vchd_flat if decode_strategy in vchd_strategies else thinking_flat
     if flat:
@@ -101,15 +103,32 @@ def extract_decode_options(
         "psp": {"psp_enabled": True},
         "vrg": {"vrg_enabled": True},
         "psp_vrg": {"psp_enabled": True, "vrg_enabled": True},
+        # Paper defaults: α=1.0, β=0.1, noise_step=500; no VCHD gates/CCAW.
+        "vcd": {
+            "negative_branch": "noise_image",
+            "noise_step": 500,
+            "alpha": 1.0,
+            "beta": 0.1,
+            "enable_u_gate": False,
+            "enable_r_gate": False,
+            "enable_g_gate": False,
+            "ccaw_enabled": False,
+            "history_enabled": False,
+        },
     }
     if decode_strategy in presets:
         if decode_config is None:
             decode_config = {}
         elif isinstance(decode_config, ThinkingDecodeConfig):
             decode_config = decode_config.to_dict()
+        elif isinstance(decode_config, VCHDDecodeConfig):
+            decode_config = {
+                field.name: getattr(decode_config, field.name)
+                for field in fields(decode_config)
+            }
         elif not isinstance(decode_config, Mapping):
             raise TypeError(
-                "Thinking decode_config must be ThinkingDecodeConfig, "
+                "decode_config must be a decoding dataclass, "
                 "a mapping, or None"
             )
         decode_config = {**presets[decode_strategy], **dict(decode_config)}

@@ -1277,25 +1277,28 @@ class LLaDAModel(nn.Module):
             attention_mask = None
 
         # Merge attention mask with attention bias.
+        #
+        # MMaDA/LLaDA is a masked diffusion LM: attention is bidirectional
+        # by default. Callers explicitly opt into non-bidirectional
+        # patterns via `attention_bias` (e.g. VCHD's paired visual/ablated
+        # branches or DCD's window bias), `attention_mask`, or alibi.
+        # When none of those is set, we skip the mask-merging block
+        # entirely and let SDPA compute unmasked bidirectional attention.
+        # Auto-synthesising a causal bias whenever `past_key_values` is
+        # non-None -- as OLMo did for its autoregressive LM -- would
+        # silently regress the cached prefix / dual paths to
+        # causal-over-response.
         kv_grows = replace_position is None
         if (
             attention_bias is not None
             or attention_mask is not None
             or self.config.alibi
-            # NOTE (epwalsh): we need to initialize the attn bias in order for attn to work properly
-            # with key+value cache. Otherwise `F.scaled_dot_product_attention()` doesn't seem to compute
-            # scores correctly.
-            or past_key_values is not None
         ):
             if attention_bias is None and self.config.alibi:
                 attention_bias = get_causal_attention_bias(
                     self.__cache, past_length + seq_len, x.device
                 ) + self.get_alibi_attention_bias(past_length + seq_len, x.device)
-            elif attention_bias is None and kv_grows:
-                attention_bias = get_causal_attention_bias(self.__cache, past_length + seq_len, x.device)
-            elif attention_bias is None:
-                pass
-            elif attention_bias.dtype in (torch.int8, torch.bool):
+            elif attention_bias is not None and attention_bias.dtype in (torch.int8, torch.bool):
                 attention_bias = attention_bias.to(dtype=torch.float)
                 attention_bias.masked_fill_(attention_bias == 0.0, torch.finfo(attention_bias.dtype).min)
 
@@ -1310,7 +1313,12 @@ class LLaDAModel(nn.Module):
 
             # Add in the masking bias.
             if attention_mask is not None:
-                attention_bias = attention_bias + attention_mask
+                if attention_bias is None:
+                    attention_bias = attention_mask.to(dtype=torch.float).expand(
+                        -1, -1, mask_len, -1
+                    ).contiguous()
+                else:
+                    attention_bias = attention_bias + attention_mask
                 # Might get -infs after adding attention mask, since dtype.min + dtype.min = -inf.
                 # `F.scaled_dot_product_attention()` doesn't handle -inf like you'd expect, instead
                 # it can produce NaNs.

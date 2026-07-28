@@ -70,7 +70,15 @@ def m3cot_doc_to_text(
 
 
 def extract_m3cot_answer(text: str, choices: list[str]) -> str:
-    """Apply the official M3CoT ``judge_answer`` extraction rules."""
+    """Official M3CoT ``judge_answer`` rules, preceded by boxed/answer-is
+    extraction for reasoning-style outputs.
+
+    The reason checkpoint ends its CoT with ``\\boxed{B}`` (or "the correct
+    answer is: B"). The official rules only look for ``(B)``, option-text
+    substrings (taking the LAST mention, which in a CoT that discusses every
+    option is close to random), or standalone letter tokens, so they misread
+    nearly all boxed CoT answers.
+    """
     text = str(text)
     if "[Answer]" in text:
         text = (
@@ -78,6 +86,24 @@ def extract_m3cot_answer(text: str, choices: list[str]) -> str:
             .split("[Rationale]")[0]
             .split("[Context]")[0]
         )
+
+    valid = {ANSWER_LABELS[i] for i in range(len(choices))}
+    boxed = re.findall(
+        r"\\boxed\s*\{\s*(?:\\text\s*\{\s*)?\(?\s*([A-Za-z])\s*\)?(?:\s*\})?\s*\}",
+        text,
+    )
+    boxed = [m.upper() for m in boxed if m.upper() in valid]
+    if boxed:
+        return boxed[-1]
+
+    stated = re.findall(
+        r"(?:answer|option|choice)\s*(?:is|:)?\s*\(?\s*([A-Za-z])\s*\)?(?![A-Za-z])",
+        text,
+        re.IGNORECASE,
+    )
+    stated = [m.upper() for m in stated if m.upper() in valid]
+    if stated:
+        return stated[-1]
 
     matches = re.findall(r"\(([A-Za-z])\)", text)
     if matches:

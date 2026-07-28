@@ -14,6 +14,13 @@ from PIL import Image
 ANSWER_LABELS = list(string.ascii_uppercase)
 
 
+def m3cot_process_docs(dataset):
+    """Keep only the official M3CoT test split from the mixed TSV."""
+    return dataset.filter(
+        lambda doc: str(doc.get("split", "")).strip().lower() == "test"
+    )
+
+
 def _is_present(value: Any) -> bool:
     if value is None:
         return False

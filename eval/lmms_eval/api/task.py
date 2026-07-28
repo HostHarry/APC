@@ -1040,7 +1040,8 @@ class ConfigurableTask(Task):
             dataset_kwargs.pop("load_from_disk")
             # using local task in offline environment, need to process the online dataset into local format via
             # `ds = load_datasets("lmms-lab/MMMU")`
-            self.dataset = datasets.load_from_disk(path=self.DATASET_PATH, name=self.DATASET_NAME)
+            # datasets>=2.x: load_from_disk(dataset_path) only (no path=/name= kwargs).
+            self.dataset = datasets.load_from_disk(self.DATASET_PATH)
         else:
             self.dataset = datasets.load_dataset(
                 path=self.DATASET_PATH,

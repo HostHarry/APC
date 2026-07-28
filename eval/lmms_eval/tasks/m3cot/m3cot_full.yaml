@@ -5,6 +5,8 @@ dataset_kwargs:
     test: /root/autodl-tmp/MMaDA_DCD_cloud_bundle_20260711/MMaDA/evaluation/VLMEvalKit/LMUData/M3CoT.tsv
   delimiter: "\t"
 test_split: test
+# TSV includes train+test; keep official test split only (~2272).
+process_docs: !function utils.m3cot_process_docs
 output_type: generate_until
 doc_to_visual: !function utils.m3cot_doc_to_visual
 doc_to_text: !function utils.m3cot_doc_to_text
